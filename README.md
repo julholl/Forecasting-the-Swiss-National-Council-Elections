@@ -1,5 +1,6 @@
 # Forecasting-the-Swiss-National-Council-Elections
-This repository contains the data, Stan and R codes, and the corresponding figures, complementary to the master thesis "Forecasting the Swiss National Council Elections" written by Julia Hollmann.
+This repository contains the data, Stan and R codes, and the corresponding figures, complementary to the master thesis "Forecasting the Swiss National Council Elections" written by Julia Hollmann. The thesis presents a dynamic Bayesian model designed specifically for forecasting the Swiss national council elections, that combines the predictions of a structural historical model with those of publicly available polling data.
+
 The data includes the Swiss polling data and Swiss election data.
 The Stan codes include the fundamentals code for the prior predictive check, the final fundamentals code, and the dynamic model code.
 The R markdown files include a file that summarizes the historical data, one that summarizes the polling data, and separate files to run the prior predictive check, the posterior predictive check for 2019 and 2023, and the dynamic model for 2019 and 2023. The latter has three versions: for the forecast six months ahead of the election, one month ahead of the election, and for the final forecast.
