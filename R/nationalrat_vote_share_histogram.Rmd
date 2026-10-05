@@ -1,0 +1,331 @@
+---
+title: "nationalrat vote share histogram"
+output: html_document
+date: "2026-06-25"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+##Nationalrat Vote Share Histogram
+Plot the vote share values of the top 6 parties over the years 1971 to 2023 in a histogram to see what vote share values are most common. This will later be compared to the vote shares simulated by STAN in the prior predictive check to see how the values of the coefficients need to be adjusted for the forecasting model to later work with real data.
+
+```{r}
+library(rstan)
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(tidyr)
+library(readr)
+
+```
+
+
+```{r}
+#party vote shares 1971-2023
+
+party_levels <- c("fdp", "cvp", "sp", "svp", "other")
+predictor_cols <- c("smi_norm", "health_insurance_norm", "immigration_norm")
+
+party_colors <- c(
+  "fdp" = "cornflowerblue",
+  "cvp" = "darkorange",
+  "sp" = "red2",
+  "svp" = "green4",
+  "other" = "plum2"
+)
+
+election_data <- read.csv("swiss election data.csv")
+
+election_data <- election_data %>%
+  mutate(
+    party = factor(party, levels = party_levels),
+    year = as.integer(year)
+  ) %>%
+  arrange(year, party)
+
+#fdp
+fdp_results <- election_data %>%
+  filter(party == "fdp")
+
+fdp <- c(fdp_results$vote_share)
+
+#cvp
+cvp_results <- election_data %>%
+  filter(party == "cvp")
+
+cvp <- c(cvp_results$vote_share)
+
+#sp
+sp_results <- election_data %>%
+  filter(party == "sp")
+
+sp <- c(sp_results$vote_share)
+
+#svp
+svp_results <- election_data %>%
+  filter(party == "svp")
+
+svp <- c(svp_results$vote_share)
+
+#other
+other_results <- election_data %>%
+  filter(party == "other")
+
+other <- c(other_results$vote_share)
+
+```
+
+
+#Stats by Party
+```{r}
+#FDP
+fdp_min <- min(fdp)
+fdp_max <- max(fdp)
+fdp_mean <- mean(fdp)
+fdp_median <- median(fdp)
+
+bin_width <- 0.01
+#create breaks explicitly
+fdp_breaks <- seq(0, max(fdp) + bin_width, by = bin_width)
+#cut data into bins
+fdp_bins <- cut(fdp, breaks = fdp_breaks, include.lowest = TRUE, right = TRUE)
+#count frequencies
+fdp_bin_counts <- table(fdp_bins)
+#find index of the highest bin
+fdp_highest_bin_index <- which.max(fdp_bin_counts)
+#calculate center directly from breaks vector
+fdp_lower_bound <- fdp_breaks[fdp_highest_bin_index]
+fdp_upper_bound <- fdp_breaks[fdp_highest_bin_index + 1]
+fdp_modal_class_center <- (fdp_lower_bound + fdp_upper_bound) / 2
+
+cat("FDP", "\nMin: ", fdp_min, "\nMax: ", fdp_max, "\nMean: ", fdp_mean, "\nMedian: ", fdp_median, "\nMode: ", fdp_modal_class_center)
+```
+
+
+```{r}
+#CVP
+cvp_min <- min(cvp)
+cvp_max <- max(cvp)
+cvp_mean <- mean(cvp)
+cvp_median <- median(cvp)
+
+bin_width <- 0.01
+#create breaks explicitly
+cvp_breaks <- seq(0, max(cvp) + bin_width, by = bin_width)
+#cut data into bins
+cvp_bins <- cut(cvp, breaks = cvp_breaks, include.lowest = TRUE, right = TRUE)
+#count frequencies
+cvp_bin_counts <- table(cvp_bins)
+#find index of the highest bin
+cvp_highest_bin_index <- which.max(cvp_bin_counts)
+#calculate center directly from breaks vector
+cvp_lower_bound <- cvp_breaks[cvp_highest_bin_index]
+cvp_upper_bound <- cvp_breaks[cvp_highest_bin_index + 1]
+cvp_modal_class_center <- (cvp_lower_bound + cvp_upper_bound) / 2
+
+cat("CVP", "\nMin: ", cvp_min, "\nMax: ", cvp_max, "\nMean: ", cvp_mean, "\nMedian: ", cvp_median, "\nMode: ", cvp_modal_class_center)
+
+```
+
+
+```{r}
+#SP
+sp_min <- min(sp)
+sp_max <- max(sp)
+sp_mean <- mean(sp)
+sp_median <- median(sp)
+
+bin_width <- 0.01
+#create breaks explicitly
+sp_breaks <- seq(0, max(sp) + bin_width, by = bin_width)
+#cut data into bins
+sp_bins <- cut(sp, breaks = sp_breaks, include.lowest = TRUE, right = TRUE)
+#count frequencies
+sp_bin_counts <- table(sp_bins)
+#find index of the highest bin
+sp_highest_bin_index <- which.max(sp_bin_counts)
+#calculate center directly from breaks vector
+sp_lower_bound <- sp_breaks[sp_highest_bin_index]
+sp_upper_bound <- sp_breaks[sp_highest_bin_index + 1]
+sp_modal_class_center <- (sp_lower_bound + sp_upper_bound) / 2
+
+cat("SP", "\nMin: ", sp_min, "\nMax: ", sp_max, "\nMean: ", sp_mean, "\nMedian: ", sp_median, "\nMode: ", sp_modal_class_center)
+
+```
+
+
+```{r}
+#SVP
+svp_min <- min(svp)
+svp_max <- max(svp)
+svp_mean <- mean(svp)
+svp_median <- median(svp)
+
+bin_width <- 0.01
+#create breaks explicitly
+svp_breaks <- seq(0, max(svp) + bin_width, by = bin_width)
+#cut data into bins
+svp_bins <- cut(svp, breaks = svp_breaks, include.lowest = TRUE, right = TRUE)
+#count frequencies
+svp_bin_counts <- table(svp_bins)
+#find index of the highest bin
+svp_highest_bin_index <- which.max(svp_bin_counts)
+#calculate center directly from breaks vector
+svp_lower_bound <- svp_breaks[svp_highest_bin_index]
+svp_upper_bound <- svp_breaks[svp_highest_bin_index + 1]
+svp_modal_class_center <- (svp_lower_bound + svp_upper_bound) / 2
+
+cat("SVP", "\nMin: ", svp_min, "\nMax: ", svp_max, "\nMean: ", svp_mean, "\nMedian: ", svp_median, "\nMode: ", svp_modal_class_center)
+
+```
+
+
+```
+#Grüne
+green_min <- min(green)
+green_max <- max(green)
+green_mean <- mean(green)
+green_median <- median(green)
+
+bin_width <- 0.01
+#create breaks explicitly
+green_breaks <- seq(0, max(green) + bin_width, by = bin_width)
+#cut data into bins
+green_bins <- cut(green, breaks = green_breaks, include.lowest = TRUE, right = TRUE)
+#count frequencies
+green_bin_counts <- table(green_bins)
+#find index of the highest bin
+green_highest_bin_index <- which.max(green_bin_counts)
+#calculate center directly from breaks vector
+green_lower_bound <- breaks[green_highest_bin_index]
+green_upper_bound <- breaks[green_highest_bin_index + 1]
+green_modal_class_center <- (green_lower_bound + green_upper_bound) / 2
+
+cat("Grüne", "\nMin: ", green_min, "\nMax: ", green_max, "\nMean: ", green_mean, "\nMedian: ", green_median, "\nMode: ", green_modal_class_center)
+
+```
+
+
+```{r}
+#OTHER
+other_min <- min(other)
+other_max <- max(other)
+other_mean <- mean(other)
+other_median <- median(other)
+
+bin_width <- 0.01
+#create breaks explicitly
+other_breaks <- seq(0, max(other) + bin_width, by = bin_width)
+#cut data into bins
+other_bins <- cut(other, breaks = other_breaks, include.lowest = TRUE, right = TRUE)
+#count frequencies
+other_bin_counts <- table(other_bins)
+#find index of the highest bin
+other_highest_bin_index <- which.max(other_bin_counts)
+#calculate center directly from breaks vector
+other_lower_bound <- other_breaks[other_highest_bin_index]
+other_upper_bound <- other_breaks[other_highest_bin_index + 1]
+other_modal_class_center <- (other_lower_bound + other_upper_bound) / 2
+
+cat("Other", "\nMin: ", other_min, "\nMax: ", other_max, "\nMean: ", other_mean, "\nMedian: ", other_median, "\nMode: ", other_modal_class_center)
+
+```
+
+
+#Plot Total
+```{r}
+#one list of all vote share values
+all_shares <- c(fdp, cvp, sp, svp, other)
+
+#data frame
+df <- data.frame(vote_share = all_shares)
+
+```
+
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+#stats
+avg_vote_share <- mean(all_shares)
+min_vote_share <- min(all_shares)
+max_vote_share <- max(all_shares)
+median_vote_share <- median(all_shares)
+
+#computing the mode
+
+bin_width <- 0.01
+#create breaks explicitly
+breaks <- seq(0, max_vote_share + bin_width, by = bin_width)
+#cut data into bins
+bins <- cut(all_shares, breaks = breaks, include.lowest = TRUE, right = TRUE)
+#count frequencies
+bin_counts <- table(bins)
+#find index of the highest bin
+highest_bin_index <- which.max(bin_counts)
+#calculate center directly from breaks vector
+lower_bound <- breaks[highest_bin_index]
+upper_bound <- breaks[highest_bin_index + 1]
+modal_class_center <- (lower_bound + upper_bound) / 2
+
+
+#histogram
+p <- ggplot(df, aes(x=vote_share)) +
+  geom_histogram(binwidth = 0.01, boundary = 0, color = "black", fill = "lightblue") +
+  geom_vline(xintercept = avg_vote_share, color = "red", linewidth = 1, linetype = "solid") +
+  geom_vline(xintercept = c(min_vote_share, max_vote_share), color = "darkgreen", linewidth = 1, linetype = "dashed") +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+  labs(
+    x = "Vote Share",
+    y = "Frequency"
+  ) +
+  theme_minimal() +
+  theme(
+    margins = margin(t = 10, r = 10, b = 10, l = 10, unit = "pt")
+  )
+
+print(p)
+
+ggsave("Vote Share Distribution 1971-2023 (Bin Width 0.01).png", p, width = 6, height = 4, dpi = 200, units = "in")
+
+#summary
+cat("Minimum Vote Share: ", min_vote_share,
+    "\nMaximum Vote Share: ", max_vote_share,
+    "\nAverage Vote Share: ", avg_vote_share,
+    "\nMedian Vote Share: ", median_vote_share,
+    "\nModal Bin Center: ", modal_class_center)
+
+```
+
+```{r}
+hist(all_shares,
+     col = "lightblue",
+     border = "white",
+     breaks = 84,
+     xlim = c(0, 0.35),
+     main = "Vote Shares")
+
+abline(v = avg_vote_share, col = "red", lwd = 2)
+abline(v = median_vote_share, col = "purple", lwd = 2)
+abline(v = modal_class_center, col = "orange", lwd = 2)
+
+abline(v = min_vote_share, col = "green", lwd = 2)
+abline(v = max_vote_share, col = "green", lwd = 2)
+```
+
+
+
+
+
+
+
+
+
+
+
+

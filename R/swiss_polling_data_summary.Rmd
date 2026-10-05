@@ -1,0 +1,868 @@
+---
+title: "swiss_polling_data_summary"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#setup
+library(ggplot2)
+library(dplyr)
+library(scales)
+library(lubridate)
+library(zoo)
+library(pracma)
+library(tidyverse)
+
+```
+
+#Swiss Polling Data Summary
+Import the csv file *swiss polling data* and create plots that show how the vote shares change over time (waves) by election year and by company, and compute the average vote shares over all companies by time periods and plot the change in vote shares over time.
+
+```{r}
+#import swiss polling data csv
+
+library(readr)
+
+swiss_polling_data <- read_csv("swiss polling data.csv")
+
+#convert polling_period strings to date
+swiss_polling_data$polling_period <- as.Date(swiss_polling_data$polling_period, format = "%d.%m.%Y")
+
+#lowercase to uppercase
+company_labels <- c(
+  "fors" = "FORS",
+  "sotomo" = "Sotomo",
+  "tamedia" = "Tamedia"
+)
+
+```
+
+Import the csv file *swiss election data* that includes the election results from 1971 to 2023.
+
+```{r}
+#import election results 2019 and 2023
+election_data <- read.csv("swiss election data.csv")
+
+results_2019 <- election_data %>%
+  filter(year == 2019) %>%
+  mutate(vote_share = vote_share *100)
+
+results_2023 <- election_data %>%
+  filter(year == 2023) %>%
+  mutate(vote_share = vote_share *100)
+
+```
+
+Import the csv files *fundamentals predictions* for 2019 and 2023 that include the fundamentals predictions for both years.
+
+```{r}
+#2019
+predictions_2019 <- read_csv("fundamentals_predictions_2019.csv")
+predictions_2019 <- predictions_2019 %>%
+  mutate(mean_pred = mean_pred *100)
+
+#fdp
+fdp_pred_2019 <- predictions_2019 %>%
+  filter(party == "fdp")
+
+#cvp
+cvp_pred_2019 <- predictions_2019 %>%
+  filter(party == "cvp")
+
+#sp
+sp_pred_2019 <- predictions_2019 %>%
+  filter(party == "sp")
+
+#svp
+svp_pred_2019 <- predictions_2019 %>%
+  filter(party == "svp")
+
+#other
+other_pred_2019 <- predictions_2019 %>%
+  filter(party == "other")
+
+
+#2023
+predictions_2023 <- read_csv("fundamentals_predictions_2023.csv")
+predictions_2023 <- predictions_2023 %>%
+  mutate(mean_pred = mean_pred *100)
+
+#fdp
+fdp_pred_2023 <- predictions_2023 %>%
+  filter(party == "fdp")
+
+#cvp
+cvp_pred_2023 <- predictions_2023 %>%
+  filter(party == "cvp")
+
+#sp
+sp_pred_2023 <- predictions_2023 %>%
+  filter(party == "sp")
+
+#svp
+svp_pred_2023 <- predictions_2023 %>%
+  filter(party == "svp")
+
+#other
+other_pred_2023 <- predictions_2023 %>%
+  filter(party == "other")
+
+```
+
+##Setup
+
+```{r}
+#assign colors and names to parties
+party_colors <- c(
+  "fdp" = "cornflowerblue",
+  "cvp" = "darkorange",
+  "sp" = "red2",
+  "svp" = "green4",
+  "other" = "plum2"
+)
+
+party_labels <- c(
+  "fdp" = "FDP",
+  "cvp" = "CVP",
+  "sp" = "SP",
+  "svp" = "SVP",
+  "other" = "Other"
+)
+
+#filter polling data by year
+SPD_2019 <- swiss_polling_data %>%
+  filter(year == 2019)
+
+SPD_2023 <- swiss_polling_data %>%
+  filter(year == 2023)
+
+```
+
+####Filter Data by Polling Company / Party and Year
+
+```{r}
+#tamedia
+SPD_tamedia <- swiss_polling_data %>%
+  filter(polling_company == "tamedia")
+
+SPD_tamedia_2019 <- SPD_tamedia %>%
+  filter(year == 2019)
+
+SPD_tamedia_2023 <- SPD_tamedia %>%
+  filter(year == 2023)
+
+```
+
+```{r}
+#sotomo
+SPD_sotomo <- swiss_polling_data %>%
+  filter(polling_company == "sotomo")
+
+SPD_sotomo_2019 <- SPD_sotomo %>%
+  filter(year == 2019)
+
+SPD_sotomo_2023 <- SPD_sotomo %>%
+  filter(year == 2023)
+
+```
+
+```{r}
+#fors
+SPD_fors <- swiss_polling_data %>%
+  filter(polling_company == "fors")
+
+SPD_fors_2019 <- SPD_fors %>%
+  filter(year == 2019)
+
+SPD_fors_2023 <- SPD_fors %>%
+  filter(year == 2023)
+
+```
+
+```{r}
+#fdp
+fdp_polls <- swiss_polling_data %>%
+  filter(party == "fdp") %>%
+  arrange(polling_period)
+
+fdp_polls_2019 <- fdp_polls %>%
+  filter(year == 2019)
+
+fdp_polls_2023 <- fdp_polls %>%
+  filter(year == 2023)
+
+
+#cvp
+cvp_polls <- swiss_polling_data %>%
+  filter(party == "cvp") %>%
+  arrange(polling_period)
+
+cvp_polls_2019 <- cvp_polls %>%
+  filter(year == 2019)
+
+cvp_polls_2023 <- cvp_polls %>%
+  filter(year == 2023)
+
+
+#sp
+sp_polls <- swiss_polling_data %>%
+  filter(party == "sp") %>%
+  arrange(polling_period)
+
+sp_polls_2019 <- sp_polls %>%
+  filter(year == 2019)
+
+sp_polls_2023 <- sp_polls %>%
+  filter(year == 2023)
+
+
+#svp
+svp_polls <- swiss_polling_data %>%
+  filter(party == "svp") %>%
+  arrange(polling_period)
+
+svp_polls_2019 <- svp_polls %>%
+  filter(year == 2019)
+
+svp_polls_2023 <- svp_polls %>%
+  filter(year == 2023)
+
+
+#other
+other_polls <- swiss_polling_data %>%
+  filter(party == "other") %>%
+  arrange(polling_period)
+
+other_polls_2019 <- other_polls %>%
+  filter(year == 2019)
+
+other_polls_2023 <- other_polls %>%
+  filter(year == 2023)
+
+```
+
+###Functions
+
+```{r}
+#aggregate same day polls into one weighted average
+#this way get one ewma value per day later
+
+aggregate_polls <- function(data) {
+  data %>%
+    group_by(party, polling_period) %>%
+    summarise(
+      poll_vote_share = sum(poll_vote_share * sample_size, na.rm = TRUE) / sum(sample_size, na.rm = TRUE),
+      sample_size = sum(sample_size, na.rm = TRUE),
+      .groups = "drop"
+    )
+}
+```
+
+
+```{r}
+#EWMA function
+calc_ewma <- function(votes, samples, l_base = 0.5) {
+  n <-  length(votes)
+  ewma  <-  numeric(n)
+  
+  ewma[1] <- votes[1]
+  
+  weights <- samples / max(samples, na.rm = TRUE)
+  
+  for (i in 2:n) {
+    current_l <- l_base * weights[i]
+    ewma[i] <- (current_l * votes[i]) + (1 - current_l) * ewma[i-1]
+  }
+  
+  return(ewma)
+}
+
+```
+
+##Plots comparing trajectories of public opinion by polling company
+
+```{r}
+#plot 2019 all three companies stacked
+plot_2019 <- ggplot(SPD_2019, aes(x = polling_period, y = poll_vote_share, color = party))+
+  geom_line(linewidth = 0.5)+
+  geom_point(size = 1)+
+  facet_grid(. ~ polling_company, scales = "fixed", labeller = as_labeller(company_labels))+
+  scale_color_manual(name = "", values = party_colors, labels = party_labels)+
+  scale_y_continuous(limits = c(5, 40), breaks = seq(5, 40, by = 5), minor_breaks = seq(5, 40, by = 2.5), expand = expansion(0))+
+  labs(
+    x = "Polling Period",
+    y = "Vote Share (%)"
+  )+
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title.x = element_text(margin = margin(t = 10, unit = "pt")),
+    legend.position = "bottom",
+    strip.background = element_rect(fill = "gray90", color = "gray9"),
+    panel.background = element_rect(fill = "gray100", color = "gray9"),
+    plot.margin = margin(t = 20, r = 20, b = 0, l = 10, unit = "pt"))
+
+print(plot_2019)
+
+ggsave("Polls by Company (2019).png", plot_2019, width = 8, height = 5, dpi = 200, units = "in")
+
+```
+
+```{r}
+#plot 2023 all three companies stacked
+plot_2023 <- ggplot(SPD_2023, aes(x = polling_period, y = poll_vote_share, color = party))+
+  geom_line(linewidth = 0.5)+
+  geom_point(size = 1)+
+  facet_grid(. ~ polling_company, scales = "fixed", labeller = as_labeller(company_labels))+
+  scale_color_manual(name = "", values = party_colors, labels = party_labels)+
+  scale_y_continuous(limits = c(5, 40), breaks = seq(5, 40, by = 5), minor_breaks = seq(5, 40, by = 2.5), expand = expansion(0))+
+  labs(
+    x = "Polling Period",
+    y = "Vote Share (%)"
+  )+
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title.x = element_text(margin = margin(t = 10, unit = "pt")),
+    legend.position = "bottom",
+    strip.background = element_rect(fill = "gray90", color = "gray9"),
+    panel.background = element_rect(fill = "gray100", color = "gray9"),
+    plot.margin = margin(t = 20, r = 20, b = 0, l = 10, unit = "pt"))
+
+print(plot_2023)
+
+ggsave("Polls by Company (2023).png", plot_2023, width = 8, height = 5, dpi = 200, units = "in")
+
+```
+
+##Plots by Party
+Plots of each party's public opinion trajectory - combining all polls.
+Exponential weighted moving average (EWMA) to compute the average public opinion from all polls.
+
+###Setup
+
+```{r}
+ewma_2019 <- SPD_2019 %>%
+  aggregate_polls() %>%
+  arrange(party, polling_period) %>%
+  group_by(party) %>%
+  mutate(
+    ewma_value = calc_ewma(poll_vote_share, sample_size, a_base = 0.5)
+  ) %>%
+  ungroup() %>%
+  select(polling_period, party, ewma_value) %>%
+  pivot_wider(
+    id_cols = polling_period,
+    names_from = party,
+    values_from = ewma_value,
+    names_prefix = "ewma_"
+  ) %>%
+  arrange(polling_period)
+
+write_csv(ewma_2019, "ewma_2019.csv")
+
+```
+
+```{r}
+ewma_2023 <- SPD_2023 %>%
+  aggregate_polls() %>%
+  arrange(party, polling_period) %>%
+  group_by(party) %>%
+  mutate(
+    ewma_value = calc_ewma(poll_vote_share, sample_size, a_base = 0.5)
+  ) %>%
+  ungroup() %>%
+  select(polling_period, party, ewma_value) %>%
+  pivot_wider(
+    id_cols = polling_period,
+    names_from = party,
+    values_from = ewma_value,
+    names_prefix = "ewma_"
+  ) %>%
+  arrange(polling_period)
+
+write_csv(ewma_2023, "ewma_2023.csv")
+
+```
+
+```{r}
+#election result fdp 2019
+fdp_result_2019 <- results_2019$vote_share[1]
+
+#EWMA (exponential weighted moving average)
+fdp_ewma_2019 <- ewma_2019 %>%
+  select(polling_period, ewma_fdp) %>%
+  rename(ewma = ewma_fdp)
+
+```
+
+```{r}
+#election result fdp 2023
+fdp_result_2023 <- results_2023$vote_share[1]
+
+#EWMA (exponential weighted moving average)
+fdp_ewma_2023 <- ewma_2023 %>%
+  select(polling_period, ewma_fdp) %>%
+  rename(ewma = ewma_fdp)
+
+```
+
+```{r}
+#election result cvp 2019
+cvp_result_2019 <- results_2019$vote_share[2]
+
+#EWMA (exponential weighted moving average)
+cvp_ewma_2019 <- ewma_2019 %>%
+  select(polling_period, ewma_cvp) %>%
+  rename(ewma = ewma_cvp)
+
+```
+
+```{r}
+#election result cvp 2023
+cvp_result_2023 <- results_2023$vote_share[2]
+
+#EWMA (exponential weighted moving average)
+cvp_ewma_2023 <- ewma_2023 %>%
+  select(polling_period, ewma_cvp) %>%
+  rename(ewma = ewma_cvp)
+
+```
+
+```{r}
+#election result sp 2019
+sp_result_2019 <- results_2019$vote_share[3]
+
+#EWMA (exponential weighted moving average)
+sp_ewma_2019 <- ewma_2019 %>%
+  select(polling_period, ewma_sp) %>%
+  rename(ewma = ewma_sp)
+
+```
+
+```{r}
+#election result sp 2023
+sp_result_2023 <- results_2023$vote_share[3]
+
+#EWMA (exponential weighted moving average)
+sp_ewma_2023 <- ewma_2023 %>%
+  select(polling_period, ewma_sp) %>%
+  rename(ewma = ewma_sp)
+
+```
+
+```{r}
+#election result svp 2019
+svp_result_2019 <- results_2019$vote_share[4]
+
+#EWMA (exponential weighted moving average)
+svp_ewma_2019 <- ewma_2019 %>%
+  select(polling_period, ewma_svp) %>%
+  rename(ewma = ewma_svp)
+
+```
+
+```{r}
+#election result svp 2023
+svp_result_2023 <- results_2023$vote_share[4]
+
+#EWMA (exponential weighted moving average)
+svp_ewma_2023 <- ewma_2023 %>%
+  select(polling_period, ewma_svp) %>%
+  rename(ewma = ewma_svp)
+
+```
+
+```{r}
+#election result other 2019
+other_result_2019 <- results_2019$vote_share[5]
+
+#EWMA (exponential weighted moving average)
+other_ewma_2019 <- ewma_2019 %>%
+  select(polling_period, ewma_other) %>%
+  rename(ewma = ewma_other)
+
+```
+
+```{r}
+#election result other 2023
+other_result_2023 <- results_2023$vote_share[5]
+
+#EWMA (exponential weighted moving average)
+other_ewma_2023 <- ewma_2023 %>%
+  select(polling_period, ewma_other) %>%
+  rename(ewma = ewma_other)
+
+```
+
+###FDP
+
+```{r}
+#plot 2019
+plot_all_fdp_2019 <- ggplot() +
+  geom_point(data = fdp_polls_2019,
+             aes(x = polling_period, y = poll_vote_share, shape = factor(polling_company)),
+             size = 2) +
+  geom_hline(yintercept = fdp_result_2019, color = "cornflowerblue", linewidth = 1) +
+  geom_hline(yintercept = fdp_pred_2019$mean_pred, linetype = "dashed", linewidth = 0.4) +
+  geom_rect(data = fdp_pred_2019,
+            aes(xmin = -Inf, xmax = Inf, ymin = lower_ci *100, ymax = upper_ci *100),
+            fill = "gray", alpha = 0.2, inherit.aes = FALSE) +
+  geom_line(data = fdp_ewma_2019,
+            aes(x = polling_period, y = ewma),
+            color = "black") +
+  scale_y_continuous(limits = c(5, 30), breaks = seq(5, 30, by = 5), minor_breaks = seq(5, 30, by = 2.5), expand = expansion(0)) +
+  labs(
+    x = "Polling Period",
+    y = "Vote Share (%)",
+    shape = "Polling Company"
+  ) +
+  scale_shape_discrete(name = "", labels = company_labels) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    strip.background = element_rect(color = "white"),
+    plot.margin = margin(t = 20, r = 20, b = 0, l = 10, unit = "pt")
+  )
+
+
+print(plot_all_fdp_2019)
+
+ggsave("FDP Pre-Election Polling Outcomes Compared to the Election Result (2019).png", plot_all_fdp_2019, width = 6, height = 4, dpi = 200, units = "in")
+
+```
+
+```{r}
+#plot 2023
+plot_all_fdp_2023 <- ggplot() +
+  geom_point(data = fdp_polls_2023,
+             aes(x = polling_period, y = poll_vote_share, shape = factor(polling_company)),
+             size = 2) +
+  geom_hline(yintercept = fdp_result_2023, color = "cornflowerblue", linewidth = 1) +
+  geom_hline(yintercept = fdp_pred_2023$mean_pred, linetype = "dashed", linewidth = 0.4) +
+    geom_rect(data = fdp_pred_2019,
+            aes(xmin = -Inf, xmax = Inf, ymin = lower_ci *100, ymax = upper_ci *100),
+            fill = "gray", alpha = 0.2, inherit.aes = FALSE) +
+  geom_line(data = fdp_ewma_2023,
+            aes(x = polling_period, y = ewma),
+            color = "black") +
+  scale_y_continuous(limits = c(5, 30), breaks = seq(5, 30, by = 5), minor_breaks = seq(5, 30, by = 2.5), expand = expansion(0)) +
+  labs(
+    x = "Polling Period",
+    y = "Vote Share (%)",
+    shape = "Polling Company"
+  ) +
+  scale_shape_discrete(name = "", labels = company_labels) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    strip.background = element_rect(color = "white"),
+    plot.margin = margin(t = 20, r = 20, b = 0, l = 10, unit = "pt")
+  )
+
+
+print(plot_all_fdp_2023)
+
+ggsave("FDP Pre-Election Polling Outcomes Compared to the Election Result (2023).png", plot_all_fdp_2023, width = 6, height = 4, dpi = 200, units = "in")
+
+```
+
+###CVP
+
+```{r}
+#plot 2019
+plot_all_cvp_2019 <- ggplot() +
+  geom_point(data = cvp_polls_2019,
+             aes(x = polling_period, y = poll_vote_share, shape = factor(polling_company)),
+             size = 2) +
+  geom_hline(yintercept = cvp_result_2019, color = "darkorange", linewidth = 1) +
+  geom_hline(yintercept = cvp_pred_2019$mean_pred, linetype = "dashed", linewidth = 0.4) +
+  geom_rect(data = cvp_pred_2019,
+            aes(xmin = -Inf, xmax = Inf, ymin = lower_ci *100, ymax = upper_ci *100),
+            fill = "gray", alpha = 0.2, inherit.aes = FALSE) +
+  geom_line(data = cvp_ewma_2019,
+            aes(x = polling_period, y = ewma),
+            color = "black") +
+  scale_y_continuous(limits = c(0, 25), breaks = seq(0, 25, by = 5), minor_breaks = seq(0, 25, by = 2.5), expand = expansion(0)) +
+  labs(
+    x = "Polling Period",
+    y = "Vote Share (%)",
+    shape = "Polling Company"
+  ) +
+  scale_shape_discrete(name = "", labels = company_labels) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    strip.background = element_rect(color = "white"),
+    plot.margin = margin(t = 20, r = 20, b = 0, l = 10, unit = "pt")
+  )
+
+
+print(plot_all_cvp_2019)
+
+ggsave("CVP Pre-Election Polling Outcomes Compared to the Election Result (2019).png", plot_all_cvp_2019, width = 6, height = 4, dpi = 200, units = "in")
+
+
+```
+
+```{r}
+#plot 2023
+plot_all_cvp_2023 <- ggplot() +
+  geom_point(data = cvp_polls_2023,
+             aes(x = polling_period, y = poll_vote_share, shape = factor(polling_company)),
+             size = 2) +
+  geom_hline(yintercept = cvp_result_2023, color = "darkorange", linewidth = 1) +
+  geom_hline(yintercept = cvp_pred_2023$mean_pred, linetype = "dashed", linewidth = 0.4) +
+  geom_rect(data = cvp_pred_2023,
+            aes(xmin = -Inf, xmax = Inf, ymin = lower_ci *100, ymax = upper_ci *100),
+            fill = "gray", alpha = 0.2, inherit.aes = FALSE) +
+  geom_line(data = cvp_ewma_2023,
+            aes(x = polling_period, y = ewma),
+            color = "black") +
+  scale_y_continuous(limits = c(0, 25), breaks = seq(0, 25, by = 5), minor_breaks = seq(0, 25, by = 2.5), expand = expansion(0)) +
+  labs(
+    x = "Polling Period",
+    y = "Vote Share (%)",
+    shape = "Polling Company"
+  ) +
+  scale_shape_discrete(name = "", labels = company_labels) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    strip.background = element_rect(color = "white"),
+    plot.margin = margin(t = 20, r = 20, b = 0, l = 10, unit = "pt")
+  )
+
+
+print(plot_all_cvp_2023)
+
+ggsave("CVP Pre-Election Polling Outcomes Compared to the Election Result (2023).png", plot_all_cvp_2023, width = 6, height = 4, dpi = 200, units = "in")
+
+
+```
+
+###SP
+
+```{r}
+#plot 2019
+plot_all_sp_2019 <- ggplot() +
+  geom_point(data = sp_polls_2019,
+             aes(x = polling_period, y = poll_vote_share, shape = factor(polling_company)),
+             size = 2) +
+  geom_hline(yintercept = sp_result_2019, color = "red2", linewidth = 1) +
+  geom_hline(yintercept = sp_pred_2019$mean_pred, linetype = "dashed", linewidth = 0.4) +
+  geom_rect(data = sp_pred_2019,
+            aes(xmin = -Inf, xmax = Inf, ymin = lower_ci *100, ymax = upper_ci *100),
+            fill = "gray", alpha = 0.2, inherit.aes = FALSE) +
+  geom_line(data = sp_ewma_2019,
+            aes(x = polling_period, y = ewma),
+            color = "black") +
+  scale_y_continuous(limits = c(10, 35), breaks = seq(10, 35, by = 5), minor_breaks = seq(10, 35, by = 2.5), expand = expansion(0)) +
+  labs(
+    x = "Polling Period",
+    y = "Vote Share (%)",
+    shape = "Polling Company"
+  ) +
+  scale_shape_discrete(name = "", labels = company_labels) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    strip.background = element_rect(color = "white"),
+    plot.margin = margin(t = 20, r = 20, b = 0, l = 10, unit = "pt")
+  )
+
+
+print(plot_all_sp_2019)
+
+ggsave("SP Pre-Election Polling Outcomes Compared to the Election Result (2019).png", plot_all_sp_2019, width = 6, height = 4, dpi = 200, units = "in")
+
+
+```
+
+```{r}
+#plot 2023
+plot_all_sp_2023 <- ggplot() +
+  geom_point(data = sp_polls_2023,
+             aes(x = polling_period, y = poll_vote_share, shape = factor(polling_company)),
+             size = 2) +
+  geom_hline(yintercept = sp_result_2023, color = "red2", linewidth = 1) +
+  geom_hline(yintercept = sp_pred_2023$mean_pred, linetype = "dashed", linewidth = 0.4) +
+  geom_rect(data = sp_pred_2023,
+            aes(xmin = -Inf, xmax = Inf, ymin = lower_ci *100, ymax = upper_ci *100),
+            fill = "gray", alpha = 0.2, inherit.aes = FALSE) +
+  geom_line(data = sp_ewma_2023,
+            aes(x = polling_period, y = ewma),
+            color = "black") +
+  scale_y_continuous(limits = c(10, 35), breaks = seq(10, 35, by = 5), minor_breaks = seq(10, 35, by = 2.5), expand = expansion(0)) +
+  labs(
+    x = "Polling Period",
+    y = "Vote Share (%)",
+    shape = "Polling Company"
+  ) +
+  scale_shape_discrete(name = "", labels = company_labels) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    strip.background = element_rect(color = "white"),
+    plot.margin = margin(t = 20, r = 20, b = 0, l = 10, unit = "pt")
+  )
+
+
+print(plot_all_sp_2023)
+
+ggsave("SP Pre-Election Polling Outcomes Compared to the Election Result (2023).png", plot_all_sp_2023, width = 6, height = 4, dpi = 200, units = "in")
+
+
+```
+
+###SVP
+
+```{r}
+#plot 2019
+plot_all_svp_2019 <- ggplot() +
+  geom_point(data = svp_polls_2019,
+             aes(x = polling_period, y = poll_vote_share, shape = factor(polling_company)),
+             size = 2) +
+  geom_hline(yintercept = svp_result_2019, color = "green4", linewidth = 1) +
+  geom_hline(yintercept = svp_pred_2019$mean_pred, linetype = "dashed", linewidth = 0.4) +
+  geom_rect(data = svp_pred_2019,
+            aes(xmin = -Inf, xmax = Inf, ymin = lower_ci *100, ymax = upper_ci *100),
+            fill = "gray", alpha = 0.2, inherit.aes = FALSE) +
+  geom_line(data = svp_ewma_2019,
+            aes(x = polling_period, y = ewma),
+            color = "black") +
+  scale_y_continuous(limits = c(15, 40), breaks = seq(15, 40, by = 5), minor_breaks = seq(15, 40, by = 2.5), expand = expansion(0)) +
+  labs(
+    x = "Polling Period",
+    y = "Vote Share (%)",
+    shape = "Polling Company"
+  ) +
+  scale_shape_discrete(name = "", labels = company_labels) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    strip.background = element_rect(color = "white"),
+    plot.margin = margin(t = 20, r = 20, b = 0, l = 10, unit = "pt")
+  )
+
+
+print(plot_all_svp_2019)
+
+ggsave("SVP Pre-Election Polling Outcomes Compared to the Election Result (2019).png", plot_all_svp_2019, width = 6, height = 4, dpi = 200, units = "in")
+
+
+```
+
+```{r}
+#plot 2023
+plot_all_svp_2023 <- ggplot() +
+  geom_point(data = svp_polls_2023,
+             aes(x = polling_period, y = poll_vote_share, shape = factor(polling_company)),
+             size = 2) +
+  geom_hline(yintercept = svp_result_2023, color = "green4", linewidth = 1) +
+  geom_hline(yintercept = svp_pred_2023$mean_pred, linetype = "dashed", linewidth = 0.4) +
+  geom_rect(data = svp_pred_2023,
+            aes(xmin = -Inf, xmax = Inf, ymin = lower_ci *100, ymax = upper_ci *100),
+            fill = "gray", alpha = 0.2, inherit.aes = FALSE) +
+  geom_line(data = svp_ewma_2023,
+            aes(x = polling_period, y = ewma),
+            color = "black") +
+  scale_y_continuous(limits = c(15, 40), breaks = seq(15, 40, by = 5), minor_breaks = seq(15, 40, by = 2.5), expand = expansion(0)) +
+  labs(
+    x = "Polling Period",
+    y = "Vote Share (%)",
+    shape = "Polling Company"
+  ) +
+  scale_shape_discrete(name = "", labels = company_labels) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    strip.background = element_rect(color = "white"),
+    plot.margin = margin(t = 20, r = 20, b = 0, l = 10, unit = "pt")
+  )
+
+
+print(plot_all_svp_2023)
+
+ggsave("SVP Pre-Election Polling Outcomes Compared to the Election Result (2023).png", plot_all_svp_2023, width = 6, height = 4, dpi = 200, units = "in")
+
+
+```
+
+###Other
+
+```{r}
+#plot 2019
+plot_all_other_2019 <- ggplot() +
+  geom_point(data = other_polls_2019,
+             aes(x = polling_period, y = poll_vote_share, shape = factor(polling_company)),
+             size = 2) +
+  geom_hline(yintercept = other_result_2019, color = "plum2", linewidth = 1) +
+  geom_hline(yintercept = other_pred_2019$mean_pred, linetype = "dashed", linewidth = 0.4) +
+  geom_rect(data = other_pred_2019,
+            aes(xmin = -Inf, xmax = Inf, ymin = lower_ci *100, ymax = upper_ci *100),
+            fill = "gray", alpha = 0.2, inherit.aes = FALSE) +
+  geom_line(data = other_ewma_2019,
+            aes(x = polling_period, y = ewma),
+            color = "black") +
+  scale_y_continuous(limits = c(15, 40), breaks = seq(15, 40, by = 5), minor_breaks = seq(15, 40, by = 2.5), expand = expansion(0)) +
+  labs(
+    x = "Polling Period",
+    y = "Vote Share (%)",
+    shape = "Polling Company"
+  ) +
+  scale_shape_discrete(name = "", labels = company_labels) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    strip.background = element_rect(color = "white"),
+    plot.margin = margin(t = 20, r = 20, b = 0, l = 10, unit = "pt")
+  )
+
+
+print(plot_all_other_2019)
+
+ggsave("Other Pre-Election Polling Outcomes Compared to the Election Result (2019).png", plot_all_other_2019, width = 6, height = 4, dpi = 200, units = "in")
+
+
+```
+
+```{r}
+#plot 2023
+plot_all_other_2023 <- ggplot() +
+  geom_point(data = other_polls_2023,
+             aes(x = polling_period, y = poll_vote_share, shape = factor(polling_company)),
+             size = 2) +
+  geom_hline(yintercept = other_result_2023, color = "plum2", linewidth = 1) +
+  geom_hline(yintercept = other_pred_2023$mean_pred, linetype = "dashed", linewidth = 0.4) +
+  geom_rect(data = other_pred_2023,
+            aes(xmin = -Inf, xmax = Inf, ymin = lower_ci *100, ymax = upper_ci *100),
+            fill = "gray", alpha = 0.2, inherit.aes = FALSE) +
+  geom_line(data = other_ewma_2023,
+            aes(x = polling_period, y = ewma),
+            color = "black") +
+  scale_y_continuous(limits = c(10, 35), breaks = seq(10, 35, by = 5), minor_breaks = seq(10, 35, by = 2.5), expand = expansion(0)) +
+  labs(
+    x = "Polling Period",
+    y = "Vote Share (%)",
+    shape = "Polling Company"
+  ) +
+  scale_shape_discrete(name = "", labels = company_labels) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    strip.background = element_rect(color = "white"),
+    plot.margin = margin(t = 20, r = 20, b = 0, l = 10, unit = "pt")
+  )
+
+
+print(plot_all_other_2023)
+
+ggsave("Other Pre-Election Polling Outcomes Compared to the Election Result (2023).png", plot_all_other_2023, width = 6, height = 4, dpi = 200, units = "in")
+
+
+```

@@ -1,0 +1,473 @@
+---
+title: "predictors & run fundamentals_PPC"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Predictors
+(The data points are from the years 2011 to 2024.)
+Since we only care about election years, we only consider the data points from 2003, 2007, 2011, 2015, 2019 and 2023.
+(Immigration data collection started in 2011, so the values 0 are to be interpreted as NA.)
+SMI % return is over 4 years - we compare the values from last election year to current election year. Similarly the % increase of health insurance premiums is computed.
+I center all values, which is especially important for immigration as then the value 0 then implies "average immigration" for the election years 2003 and 2007.
+
+```{r}
+#parties and predictors
+party_levels <- c("fdp", "cvp", "sp", "svp", "other")
+predictor_cols <- c("smi_norm", "health_insurance_norm", "immigration_norm")
+
+party_colors <- c(
+  "fdp" = "cornflowerblue",
+  "cvp" = "darkorange",
+  "sp" = "red2",
+  "svp" = "green4",
+  "other" = "plum2"
+)
+
+party_labels <- c(
+  "fdp" = "FDP",
+  "cvp" = "CVP",
+  "sp" = "SP",
+  "svp" = "SVP",
+  "other" = "Other"
+)
+
+
+```
+
+
+```{r}
+library(readr)
+
+election_data <- read_csv("swiss election data.csv")
+
+```
+
+
+```{r}
+#predictor data from 2003-2023 so we will need to only extract the data points from those years from the election_data
+
+election_years <- c(2003, 2007, 2011, 2015, 2019, 2023)
+
+```
+
+
+```{r}
+#CODE TO RUN IN CONSOLE TO RUN MODEL
+
+library(rstan)
+library(dplyr)
+
+setwd("/Users/juliahollmann/Documents/GitHub/master-thesis/code")
+
+set.seed(266)
+
+#looking at 6 elections and 5 parties (4 main + rest grouped as 1 "other")
+N_e <- length(election_years)
+N_p <- 5
+N_obs <- N_e * N_p
+
+df <- election_data %>%
+  filter(year %in% election_years) %>%
+  arrange(year, party) %>%
+  mutate(
+    party = factor(party, levels = c("fdp", "cvp", "sp", "svp", "other")),
+    e_id_temp = factor(year, levels = election_years)
+  )
+
+X_matrix <- as.matrix(df[, c("smi_norm", "health_insurance_norm", "immigration_norm")])
+
+p_id <- as.integer(df$party)
+e_id <- as.integer(df$e_id_temp)
+
+
+```
+
+```{r}
+stan_data <- list(
+  N_e = N_e,
+  N_p = N_p,
+  N_obs = N_obs,
+  K = 3,
+  X = X_matrix,
+  p_id = p_id,
+  e_id = e_id
+)
+
+```
+
+
+```{r}
+fit <- stan(
+  file = "fundamentals_PPC.stan",
+  data = stan_data,
+  iter = 2000,
+  chains = 4,
+  refresh = 500
+)
+
+print(fit, pars = c("beta_0", "beta"))
+
+saveRDS(fit, "fundamentals_fit_ppc.rds")
+
+```
+
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(scales)
+
+#readRDS("fundamentals_fit_ppc.rds")
+
+sims <- rstan::extract(fit, "v_sim")$v_sim
+
+#aggregate all simulations into single vector so can create comparable plot to nationalrat_vote_share_histogram
+all_sim_shares <- as.vector(sims)
+
+#create data frame
+df_sim <- data.frame(vote_share = all_sim_shares)
+
+#stats
+avg_sim_share <- mean(all_sim_shares)
+min_sim_share <- min(all_sim_shares)
+max_sim_share <- max(all_sim_shares)
+median_sim_share <- median(all_sim_shares)
+
+bin_width <- 0.01
+#create breaks explicitly
+breaks <- seq(0, max_sim_share + bin_width, by = bin_width)
+#cut data into bins
+bins <- cut(all_sim_shares, breaks = breaks, include.lowest = TRUE, right = TRUE)
+#count frequencies
+bin_counts <- table(bins)
+#find index of the highest bin
+highest_bin_index <- which.max(bin_counts)
+#calculate center directly from breaks vector
+lower_bound <- breaks[highest_bin_index]
+upper_bound <- breaks[highest_bin_index + 1]
+modal_class_center <- (lower_bound + upper_bound) / 2
+
+#histogram
+p_sim <- ggplot(df_sim, aes(x=vote_share)) +
+  geom_histogram(binwidth = bin_width, boundary = 0, color = "black", fill = "lightblue") +
+  geom_vline(xintercept = avg_sim_share, color = "red", linewidth = 1, linetype = "solid") +
+  geom_vline(xintercept = c(min_sim_share, max_sim_share), color = "darkgreen", linewidth = 1, linetype = "dashed") +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+  labs(
+    title = "Distribution of Simulated Vote Shares",
+    subtitle = "Bin width: 1% (0.01) | All Parties and Elections Combined",
+    caption = "Red: Simulated Mean | Green: Simulated Minimum / Maximum",
+    x = "Vote Share",
+    y = "Frequency"
+  ) +
+  theme_minimal() +
+  theme(
+    margins = margin(t = 10, r = 10, b = 10, l = 10, unit = "pt")
+  )
+
+print(p_sim)
+
+
+#density curve
+p_sim_curve <- ggplot(df_sim, aes(x=vote_share))+
+  geom_density(fill="lightblue", color="black", alpha=0.6, linewidth=1)+
+  #historical mean
+  geom_vline(xintercept = mean(election_data$vote_share), color="red", linewidth=1)+
+  #historical min
+  geom_vline(xintercept = min(election_data$vote_share), color="darkgreen", linewidth=1, linetype="dashed")+
+  #historical max
+  geom_vline(xintercept = max(election_data$vote_share), color="darkgreen", linewidth=1, linetype="dashed")+
+  scale_x_continuous(labels=scales::percent_format(accuracy=1))+
+  scale_y_continuous(expand = expansion(mult=c(0,0.05)))+
+  labs(
+    x = "Vote Share",
+    y = "Density"
+  )+
+  theme_minimal() +
+  theme(
+    margins = margin(t = 10, r = 10, b = 10, l = 10, unit = "pt")
+  )
+
+print(p_sim_curve)
+
+ggsave("Distribution of Simulated Vote Shares PPC (Bin Width 0.01).png", p_sim_curve, width = 6, height = 4, dpi = 200, units = "in")
+
+#rug plot
+p_rug <- p_sim_curve + geom_rug(
+  data = election_data,
+  aes(x = vote_share),
+  sides = "b"
+)
+
+print(p_rug)
+
+ggsave("Distribution of Simulated Vote Shares PPC (Bin Width 0.01) Rug Plot.png", p_rug, width = 6, height = 4, dpi = 200, units = "in")
+
+#summary
+cat("--Simulated Statistics--\n",
+    "Minimum Vote Share: ", min_sim_share,
+    "\nMaximum Vote Share: ", max_sim_share,
+    "\nAverage Vote Share: ", avg_sim_share,
+    "\nMedian Vote Share: ", median_sim_share,
+    "\nModal Bin Center: ", modal_class_center)
+
+```
+
+
+```{r}
+hist(all_sim_shares,
+     col = "lightblue",
+     border = "white",
+     breaks = 84,
+     xlim = c(0, 0.35),
+     main = "Simulated Vote Shares")
+
+abline(v = avg_sim_share, col = "red", lwd = 2)
+abline(v = median_sim_share, col = "purple", lwd = 2)
+abline(v = modal_class_center, col = "orange", lwd = 2)
+
+abline(v = min_sim_share, col = "green", lwd = 2)
+abline(v = max_sim_share, col = "green", lwd = 2)
+```
+
+
+###Simulation DF Detailed
+
+```{r}
+library(dplyr)
+library(rstan)
+library(tidyr)
+library(ggplot2)
+library(scales)
+
+#extract simulations
+sims_array <- rstan::extract(fit, "v_sim")$v_sim
+n_iterations <- dim(sims_array)[1]
+
+#create mapping frame for the 30 observations used in the model using df from above
+df_model_obs <- df %>%
+  arrange(year, party) %>%
+  mutate(
+    party = factor(party, levels = c("fdp", "cvp", "sp", "svp", "other")),
+    year = as.integer(as.character(year))
+  )
+
+#verify row count matches N_obs
+if(nrow(df_model_obs) != (N_e * N_p)) {
+  stop("Mismatch between model observations and mapping dataframe.")
+}
+
+#expand to long format for all iterations (repeat the mapping frame for every iteration)
+df_sims_long <- data.frame(
+  iteration = rep(1:n_iterations, each = nrow(df_model_obs)),
+  party = rep(df_model_obs$party, times = n_iterations),
+  year = rep(df_model_obs$year, times = n_iterations),
+  vote_share = as.vector(t(sims_array))
+)
+
+#load full historical data for comparison
+df_history <- election_data %>%
+  mutate(
+    party = factor(party, levels = c("fdp", "cvp", "sp", "svp", "other")),
+    year = as.integer(year)
+  )
+
+```
+
+
+####Winners
+Check whether or not the same party always wins.
+
+```{r}
+#reshape array to [iterations, years, parties]
+sims_3d <- array(sims_array, dim = c(n_iterations, N_e, N_p))
+
+#identify winner index (1-5) for each iteration and year
+winners_idx <- apply(sims_3d, c(1,2), which.max)
+
+#map indices to party names
+party_levels <- c("fdp", "cvp", "sp", "svp", "other")
+winners_df <- as.data.frame(winners_idx)
+colnames(winners_df) <- election_years
+
+#convert to long format for plotting
+winners_long <- winners_df %>%
+  mutate(iteration = row_number()) %>%
+  pivot_longer(cols = -iteration, names_to = "year", values_to = "winner_idx") %>%
+  mutate(
+    year = as.integer(year),
+    winner_party = factor(party_levels[winners_idx], levels = c("fdp", "cvp", "sp", "svp", "other"))
+  )
+
+#plot distribution of winners
+p_winners <- ggplot(winners_long, aes(x = winner_party, fill = winner_party)) +
+  geom_bar(show.legend = FALSE) +
+  scale_fill_manual(values = c(
+    "fdp" = "cornflowerblue",
+    "cvp" = "darkorange",
+    "sp" = "red2",
+    "svp" = "green4",
+    "other" = "plum2"
+  )) +
+  labs(
+    title = "Frequency of Winning Party in Prior Predictive Simulations",
+    x = "Winning Party",
+    y = "Count"
+  ) +
+  theme_minimal()
+
+print(p_winners)
+
+#quick console check: proportion of wins
+prop_table <- prop.table(table(winners_long$winner_party))
+print("Proportion of wins per party:")
+print(prop_table)
+
+```
+
+
+####Histograms per party over time
+
+```{r}
+p_facet <- ggplot(df_sims_long, aes(x = vote_share)) +
+  geom_histogram(binwidth = 0.01, color = "black", alpha = 0.8) +
+  facet_grid(party ~ year) + #rows: parties, columns: years
+  scale_x_continuous(labels = percent_format(Accuracy = 1), limits = c(0, 0.5)) +
+  labs(
+    title = "Prior Predictive Check: Vote Share Distributions",
+    x = "Simulated Vote Share",
+    y = "Frequency"
+  ) +
+  theme_minimal() +
+  theme(
+    strip.text = element_text(size = 8, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+print(p_facet)
+
+#overlay historical mean for context
+hist_results <- df_history %>%
+  filter(year %in% election_years) %>%
+  select(party, year, vote_share)
+
+p_facet_overlay <- p_facet +
+  geom_vline(data = hist_results, aes(xintercept = vote_share), color = "red", linewidth = 0.8, linetype = "dashed") +
+  labs(subtitle = "Red dashed line = Historical Vote Share for that Year/Party")
+
+print(p_facet_overlay)
+
+```
+
+
+###95% CI
+
+```{r}
+df_sims_stats <- df_sims_long %>%
+  group_by(party) %>%
+  summarise(
+    mean_sim = mean(vote_share),
+    sd_sim = sd(vote_share),
+    lower_ci = quantile(vote_share, 0.025),
+    upper_ci = quantile(vote_share, 0.975),
+    .groups = "drop"
+  )
+
+p_sims_ci <- ggplot(df_sims_stats, aes(x = party, y = mean_sim)) +
+  #95% CI
+  geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci),
+                width = 0.2,
+                color = "gray40",
+                linewidth = 1) +
+  #mean prediction point
+  geom_point(size = 4, color = "gray30", shape = 21, fill ="white") +
+  #scale y to percentage
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     limits = c(0, NA),
+                     expand = expansion(mult = c(0, 0.1))) +
+  labs(
+    title = "Prior Predictive Check - 95% CI",
+    x = "Party",
+    y = "Vote Share"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(face = "bold", color = party_colors),
+    margins = margin(t = 10, r = 10, b = 10, l = 10, unit = "pt")
+  )
+
+print(p_sims_ci)
+
+#ggsave("Prior Predictive Check 95pct CI.png", p_sims_ci, width = 6, height = 4, dpi = 200, units = "in")
+
+```
+
+```{r}
+
+cat("---simulation stats---\n")
+print(df_sims_stats)
+
+```
+
+
+```{r}
+p_sims_ci_new <- ggplot(df_sims_stats, aes(x = party)) +
+  #95% CI
+  geom_rect(aes(width = 0.3,
+                ymin = lower_ci, ymax = upper_ci),
+            fill = "gray50", alpha = 0.6, color = NA) +
+  #mean
+  geom_point(aes(y = mean_sim),
+             shape = 21, fill = "white", color = "black", size = 3, stroke = 0.5) +
+  #scale y to percentage
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     limits = c(0, 0.4),
+                     expand = expansion(mult = c(0, 0.1))) +
+  #values next to bars
+  geom_text(aes(y = mean_sim, label = sprintf("%.1f", mean_sim * 100)),
+            hjust = -0.9, size = 4.5, color = "gray40") +
+  #party names lowercase to capital
+  scale_x_discrete(labels = party_labels) +
+  labs(
+    x = "Party",
+    y = "Vote Share"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "gray90", linetype = "dashed"),
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(face = "bold", size = 12),
+    axis.text.y = element_text(size = 12),
+    axis.ticks.x = element_blank(),
+    plot.margin = margin(t = 20, r = 20, b = 10, l = 10, unit = "pt")
+  )
+
+print(p_sims_ci_new)
+
+ggsave("Prior Predictive Check 95pct CI.png", p_sims_ci_new, width = 8, height = 5, dpi = 200, units = "in")
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,874 @@
+---
+title: "fundamentals - predict 2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Preprocessing
+
+Load libraries and set the working directory.
+```{r}
+library(rstan)
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(tidyr)
+
+```
+
+Import the election data.
+```{r}
+library(readr)
+
+election_data <- read_csv("swiss election data.csv")
+
+```
+
+Order and colors for the parties, as well as the predictor names and the training years.
+```{r}
+#parties and predictors
+party_levels <- c("fdp", "cvp", "sp", "svp", "other")
+party_labels <- c(
+  "fdp" = "FDP",
+  "cvp" = "CVP",
+  "sp" = "SP",
+  "svp" = "SVP",
+  "other" = "Other"
+)
+
+predictor_cols <- c("smi_norm", "health_insurance_norm", "immigration_norm")
+
+party_colors <- c(
+  "fdp" = "cornflowerblue",
+  "cvp" = "darkorange",
+  "sp" = "red2",
+  "svp" = "green4",
+  "other" = "plum2"
+)
+
+#predictor data is from 2003 onward
+#predicting 2023 so will leave out 2023
+all_years_2023 <- c(2003, 2007, 2011, 2015, 2019, 2023)
+train_years_2023 <- c(2003, 2007, 2011, 2015, 2019)
+
+```
+
+
+##Data Frames
+
+Filter the data to keep only the relevant data for predicting the 2023 election.
+```{r}
+df_data_2023 <- election_data %>%
+  filter(year %in% all_years_2023) %>%
+  mutate(
+    party = factor(party, levels = party_levels),
+    year = as.integer(year)
+  ) %>%
+  arrange(year, party)
+
+```
+
+
+##Stan Data
+
+Number of elections that the model will consider for training are all the years from 2003 leading up to the 2023 election.
+We consider 5 parties: fdp, cvp, sp, svp and "other".
+The number of observations used for training is N_p * N_e.
+In order to train the model using only the data from 2003 to 2019 we use N_train which is of length 5 in this case (2003, 2007, 2011, 2015, 2019).
+```{r}
+  N_e_2023 <-  length(all_years_2023) #5
+  N_p <-  length(party_levels) #5
+  N_obs_2023 <-  N_e_2023 * N_p #25
+  K <-  length(predictor_cols) #3
+  X_2023 <-  as.matrix(df_data_2023[, predictor_cols])
+  v_obs_2023 <-  df_data_2023$vote_share
+  p_id_2023 <-  as.integer(df_data_2023$party)
+  e_id_2023 <-  as.integer(factor(df_data_2023$year, levels = all_years_2023))
+  N_train_2023 <-  length(train_years_2023) #4
+  N_pred = 1 #N_e - N_train
+
+stan_data_2023 <- list(
+  N_e = N_e_2023,
+  N_p = N_p,
+  N_obs = N_obs_2023,
+  K = K,
+  X = X_2023,
+  v_obs = v_obs_2023,
+  p_id = p_id_2023,
+  e_id = e_id_2023,
+  N_train = N_train_2023,
+  N_pred = N_pred
+)
+
+```
+
+```{r}
+# Sanity Check before running Stan
+cat("=== Data Dimension Check ===\n")
+cat("N_e (Elections):", N_e_2023, "\n")
+cat("N_p (Parties):", N_p, "\n")
+cat("N_obs (Total Rows):", N_obs_2023, "\n")
+cat("X Matrix Dimensions:", dim(X_2023), "\n") # Should be 25 3
+cat("v_obs Length:", length(v_obs_2023), "\n") # Should be 25
+cat("N_train:", N_train_2023, "\n")
+cat("N_pred:", N_pred, "\n")
+
+```
+
+
+##Run Fundamentals
+
+Run the fundamentals code with the data needed to predict the 2023 election.
+```{r}
+fit_2023 <- stan(
+  file = "fundamentals.stan",
+  data = stan_data_2023,
+  iter = 2000,
+  chains = 4,
+  seed = 266,
+  refresh = 500 #show progress every 500 iterations
+)
+
+saveRDS(fit_2023, "fundamentals_fit_2023.rds")
+
+```
+
+
+```{r}
+#read stan fit without running code again
+#fit_2023 <- readRDS("fundamentals_fit_2023.rds")
+```
+
+
+##Extract Predictions 2023
+
+The predicted samples v_pred are extracted from Stan.
+```{r}
+#v_pred is [N_pred * N_p] so 5 values per iteration
+sims_2023 <- rstan::extract(fit_2023, "v_pred")$v_pred
+
+#reshape to [iterations, parties]
+dim(sims_2023) <- c(dim(sims_2023)[1], N_p)
+
+```
+
+
+##Data Frames
+
+Create a data frame for plotting.
+```{r}
+df_pred_2023 <-  as.data.frame(sims_2023)
+colnames(df_pred_2023) = party_levels
+
+df_pred_long_2023 <- df_pred_2023 %>%
+  mutate(iteration = row_number()) %>%
+  pivot_longer(cols = -iteration, names_to = "party", values_to = "pred_share") %>%
+  mutate(party = factor(party, levels = party_levels))
+```
+
+Create a data frame for statistics.
+```{r}
+df_stats_2023 <- df_pred_long_2023 %>%
+  group_by(party) %>%
+  summarise(
+    mean_pred = mean(pred_share),
+    sd_pred = sd(pred_share),
+    lower_ci = quantile(pred_share, 0.025),
+    upper_ci = quantile(pred_share, 0.975),
+    .groups = "drop"
+  ) %>%
+  mutate(year = 2023,
+         party = as.character(party))
+
+#save as csv to use in other rmds
+write_csv(df_stats_2023, "fundamentals_predictions_2023.csv")
+
+```
+
+Create a data frame with the actual results of the 2023 election so can plot these to compare with our prediction.
+```{r}
+df_results_2023 <- df_data_2023 %>%
+  filter(year == 2023) %>%
+  select(party, vote_share)
+
+```
+
+
+##Statistics Prediction
+
+Print out the statistics of the prediction.
+```{r}
+cat("--- 2023 Election Prediction Results ---\n")
+print(df_stats_2023)
+cat("\nActual 2023 Results:\n")
+print(df_results_2023)
+
+```
+
+Check if the results fall within the CI
+```{r}
+df_check_2023 <- left_join(df_stats_2023, df_results_2023, by = "party") %>%
+  mutate(
+    within_ci = vote_share >= lower_ci & vote_share <= upper_ci
+  )
+
+cat("\nCheck whether the actual results lie within the 95% CI:\n")
+print(df_check_2023 %>% select(party, vote_share, lower_ci, upper_ci, within_ci))
+
+```
+See df_check_2023 for more accurate values of the CI - will see that the lower bound is slightly above 0.125 and therefore the vote_share 0.125 does not lie within the interval (by not even 0.0005) and we get the output FALSE.
+
+
+##Plot Prediction
+
+Plot the 95% CI for each party and overlay the actual result.
+```{r
+p_2023 <- ggplot(df_stats_2023, aes(x = party, y = mean_pred)) +
+  #95% CI
+  geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci),
+                width = 0.2,
+                color = "gray40",
+                linewidth = 1) +
+  #mean prediction point
+  geom_point(size = 4, color = "gray30", shape = 21, fill ="white") +
+  #actual result
+  geom_point(data = df_results_2023,
+             aes(x = party, y = vote_share),
+             shape = 4,
+             size = 5,
+             color = "red3") +
+  #scale y to percentage
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     limits = c(0, 0.4),
+                     expand = expansion(mult = c(0, 0.1))) +
+  #party names lowercase to capital
+  scale_x_discrete(labels = party_labels) +
+  labs(
+    title = "Posterior Predictive Check (2023)",
+    x = "Party",
+    y = "Vote Share"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(face = "bold", size = 12, color = party_colors),
+    axis.text.y = element_text(size = 12)
+  )
+
+print(p_2023)
+
+ggsave("Posterior Predictive Check (2023).png", p_2023, width = 6, height = 4, dpi = 200, units = "in")
+
+```
+
+```{r}
+p_2023 <- ggplot(df_stats_2023, aes(x = party)) +
+  #actual result
+  geom_rect(data = df_results_2023,
+            aes(width = 0.4,
+                ymin = 0, ymax = vote_share, fill = party, alpha = 0.6),
+            color = NA, show.legend = FALSE) +
+  #95% CI
+  geom_rect(aes(width = 0.3,
+                ymin = lower_ci, ymax = upper_ci),
+            fill = "gray50", alpha = 0.6, color = NA) +
+  #mean
+  geom_point(aes(y = mean_pred),
+             shape = 21, fill = "white", color = "black", size = 3, stroke = 0.5) +
+  #scale y to percentage
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     limits = c(0, 0.4),
+                     expand = expansion(mult = c(0, 0.1))) +
+  #party colors
+  scale_fill_manual(values = party_colors) +
+  #values next to bars
+  geom_text(aes(y = mean_pred, label = sprintf("%.1f", mean_pred * 100)),
+            hjust = -0.9, size = 4.5, color = "gray40") +
+  geom_text(data = df_results_2023, aes(y = vote_share, label = sprintf("%.1f", vote_share * 100)),
+            hjust = 1.9, size = 4.5, color = "black") +
+  #party names lowercase to capital
+  scale_x_discrete(labels = party_labels) +
+  labs(
+    x = "Party",
+    y = "Vote Share"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "gray90", linetype = "dashed"),
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(face = "bold", size = 12),
+    axis.text.y = element_text(size = 12),
+    axis.ticks.x = element_blank(),
+    plot.margin = margin(t = 10, r = 10, b = 10, l = 10, unit = "pt")
+  )
+
+print(p_2023)
+
+ggsave("Posterior Predictive Check (2023).png", p_2023, width = 8, height = 5, dpi = 200, units = "in")
+
+```
+
+
+##Plot Posterior Distribution of the Betas
+
+See how each predictor affects the vote share of each party.
+Positive: attracts voters, Negative: repels voters, Zero: no direct effect (vote share could increase or decrease due to direct effects on other parties)
+
+###Data Frame Betas
+
+Extract the posterior samples - this time all, not only the vote share predictions!
+```{r}
+#extract posterior samples
+posterior_samples_2023 <- rstan::extract(fit_2023)
+
+```
+
+Process beta_0 (Intercepts): create a data frame with only the beta_0s
+```{r}
+#process beta_0 (intercepts)
+df_beta0_2023 <- as.data.frame(posterior_samples_2023$beta_0)
+colnames(df_beta0_2023) <- party_levels
+
+df_beta0_long_2023 <- df_beta0_2023 %>%
+  mutate(iteration = row_number()) %>%
+  pivot_longer(cols = -iteration, names_to = "party", values_to = "value") %>%
+  mutate(param_type = "Intercept (beta_0)", party = factor(party, levels = party_levels))
+
+df_beta0_wide_2023 <- df_beta0_long_2023 %>%
+  select(iteration, party, value) %>%
+  pivot_wider(names_from = party, values_from = value)
+
+df_base_shares_2023 <- df_beta0_wide_2023 %>%
+  mutate(across(all_of(party_levels), exp, .names = "alpha_{.col}")) %>%
+  rowwise() %>%
+  mutate(
+    total_alpha = sum(c_across(starts_with("alpha_"))),
+    across(
+      starts_with("alpha_"),
+      ~ .x / total_alpha,
+      .names = "share_{.col}"
+    )
+  ) %>%
+  ungroup()
+
+df_beta0_share_long_2023 <- df_base_shares_2023 %>%
+  select(iteration, starts_with("share_alpha_")) %>%
+  pivot_longer(
+    cols = -iteration,
+    names_to = "party",
+    values_to = "base_vote_share"
+  ) %>%
+  mutate(
+    party = gsub("share_alpha_", "", party),
+    party = factor(party, levels = party_levels),
+    #convert to %
+    base_vote_share_percent = base_vote_share * 100
+  )
+
+```
+
+Process beta (Slopes): create a data frame with only the betas
+```{r}
+#process beta (slopes)
+#4000 obs because 4 chains of 1000 iterations
+#15 variables because 5 parties * 3 predictors so each [p, k] combo
+df_beta_2023 <- as.data.frame(posterior_samples_2023$beta)
+
+df_beta_long_2023 <- df_beta_2023 %>%
+  mutate(iteration = row_number()) %>%
+  pivot_longer(cols = -iteration, names_to = "param_name", values_to = "value") %>%
+  mutate(
+    p_idx = as.integer(gsub("(\\d+)\\.(\\d+)", "\\1", param_name)),
+    k_idx = as.integer(gsub("(\\d+)\\.(\\d+)", "\\2", param_name)),
+    party = party_levels[p_idx],
+    predictor = predictor_cols[k_idx]
+  ) %>%
+  mutate(param_type = "Slope")
+
+```
+
+
+###Plots
+
+Plot the distribution of the betas by party and predictor.
+```{r}
+#fdp
+p_beta_fdp_2023 <- ggplot(df_beta_long_2023 %>% filter(party == "fdp"), aes(x = value)) +
+  geom_density(alpha = 0.8, adjust = 1, fill = party_colors["fdp"]) +
+  facet_wrap( ~ predictor, ncol = 1) +
+  labs(
+    title = "Posterior Distributions of Coefficients by Predictor: FDP",
+    subtitle = "Model trained on 2003-2019 | Effect of predictors on FDP vote shares",
+    x = "Coefficient Value",
+    y = "Density"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    strip.text = element_text(face = "bold", size = 13, color = "black"),
+    strip.background = element_rect(fill = "gray90", color = "white"),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank()
+  )
+
+print(p_beta_fdp_2023)
+
+
+#cvp
+p_beta_cvp_2023 <- ggplot(df_beta_long_2023 %>% filter(party == "cvp"), aes(x = value)) +
+  geom_density(alpha = 0.8, adjust = 1, fill = party_colors["cvp"]) +
+  facet_wrap( ~ predictor, ncol = 1) +
+  labs(
+    title = "Posterior Distributions of Coefficients by Predictor: CVP",
+    subtitle = "Model trained on 2003-2019 | Effect of predictors on CVP vote shares",
+    x = "Coefficient Value",
+    y = "Density"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    strip.text = element_text(face = "bold", size = 13, color = "black"),
+    strip.background = element_rect(fill = "gray90", color = "white"),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank()
+  )
+
+print(p_beta_cvp_2023)
+
+
+#sp
+p_beta_sp_2023 <- ggplot(df_beta_long_2023 %>% filter(party == "sp"), aes(x = value)) +
+  geom_density(alpha = 0.8, adjust = 1, fill = party_colors["sp"]) +
+  facet_wrap( ~ predictor, ncol = 1) +
+  labs(
+    title = "Posterior Distributions of Coefficients by Predictor: SP",
+    subtitle = "Model trained on 2003-2019 | Effect of predictors on SP vote shares",
+    x = "Coefficient Value",
+    y = "Density"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    strip.text = element_text(face = "bold", size = 13, color = "black"),
+    strip.background = element_rect(fill = "gray90", color = "white"),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank()
+  )
+
+print(p_beta_sp_2023)
+
+
+#svp
+p_beta_svp_2023 <- ggplot(df_beta_long_2023 %>% filter(party == "svp"), aes(x = value)) +
+  geom_density(alpha = 0.8, adjust = 1, fill = party_colors["svp"]) +
+  facet_wrap( ~ predictor, ncol = 1) +
+  labs(
+    title = "Posterior Distributions of Coefficients by Predictor: SVP",
+    subtitle = "Model trained on 2003-2019 | Effect of predictors on SVP vote shares",
+    x = "Coefficient Value",
+    y = "Density"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    strip.text = element_text(face = "bold", size = 13, color = "black"),
+    strip.background = element_rect(fill = "gray90", color = "white"),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank()
+  )
+
+print(p_beta_svp_2023)
+
+
+#other
+p_beta_other_2023 <- ggplot(df_beta_long_2023 %>% filter(party == "other"), aes(x = value)) +
+  geom_density(alpha = 0.8, adjust = 1, fill = party_colors["other"]) +
+  facet_wrap( ~ predictor, ncol = 1) +
+  labs(
+    title = "Posterior Distributions of Coefficients by Predictor: Other",
+    subtitle = "Model trained on 2003-2019 | Effect of predictors on Other vote shares",
+    x = "Coefficient Value",
+    y = "Density"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    strip.text = element_text(face = "bold", size = 13, color = "black"),
+    strip.background = element_rect(fill = "gray90", color = "white"),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank()
+  )
+
+print(p_beta_other_2023)
+
+```
+
+
+```{r}
+#health insurance
+df_b_pos_hi_2023 <- df_beta_long_2023 %>%
+  filter(predictor == "health_insurance_norm") %>%
+  group_by(party) %>%
+  do(data.frame(density(.$value)[c("x", "y")])) %>%
+  ungroup() %>%
+  mutate(party = factor(party, levels = party_levels),
+         pos_val = ifelse(x>0, y, 0))
+
+p_b_pos_hi_2023 <- ggplot(df_b_pos_hi_2023, aes(x = x)) +
+  geom_line(aes(y=y), color="black", linewidth=0.5)+
+  geom_area(aes(y=pos_val, fill=party), alpha=0.6)+
+  geom_vline(xintercept = 0, linetype = "dotted", color = "black", linewidth = 0.5) +
+  facet_wrap(~ party, ncol = 1, labeller = as_labeller(party_labels)) +
+  scale_fill_manual(values = party_colors, guide = "none") +
+  scale_y_continuous(breaks = c(0,6), limits = c(0, 8)) +
+  scale_x_continuous(breaks = seq(-0.4, 0.4, by = 0.2), limits = c(-0.5, 0.5)) +
+  labs(
+    x = "Coefficient Value",
+    y = "Density"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    strip.text = element_text(face = "bold",size = 13, color = "black"),
+    strip.background = element_rect(fill = "gray90", color = "white"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(linetype = "dashed", linewidth = 0.4),
+    plot.margin = margin(t = 10, r = 10, b = 10, l = 10, unit = "pt")
+  )
+
+print(p_b_pos_hi_2023)
+
+ggsave("Posterior Distributions of the Health Insurance Coefficient (2023).png", p_b_pos_hi_2023, width = 6, height = 5, dpi = 200, units = "in")
+
+```
+
+
+```{r}
+#health insurance
+df_b_hi_2023 <- df_beta_long_2023 %>%
+  filter(predictor == "health_insurance_norm") %>%
+  mutate(party = factor(party, levels = party_levels))
+
+p_beta_hi_2023 <- ggplot(df_b_hi_2023, aes(x = value, fill = party)) +
+  geom_density(alpha = 0.8, adjust = 1) +
+  geom_vline(xintercept = 0, linetype = "dotted", color = "black", linewidth = 0.5) +
+  facet_wrap(~ party, ncol = 1, labeller = as_labeller(party_labels)) +
+  scale_fill_manual(values = party_colors, guide = "none") +
+  labs(
+    title = "Posterior Distributions of the Health Insurance Coefficient",
+    x = "Coefficient Value",
+    y = "Density"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    strip.text = element_text(face = "bold",size = 13, color = "black"),
+    strip.background = element_rect(fill = "gray90", color = "white"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank()
+  )
+
+print(p_beta_hi_2023)
+
+```
+
+```{r}
+#smi
+df_b_pos_smi_2023 <- df_beta_long_2023 %>%
+  filter(predictor == "smi_norm") %>%
+  group_by(party) %>%
+  do(data.frame(density(.$value)[c("x", "y")])) %>%
+  ungroup() %>%
+  mutate(party = factor(party, levels = party_levels),
+         pos_val = ifelse(x>0, y, 0))
+
+p_b_pos_smi_2023 <- ggplot(df_b_pos_smi_2023, aes(x = x)) +
+  geom_line(aes(y=y), color="black", linewidth=0.5)+
+  geom_area(aes(y=pos_val, fill=party), alpha=0.6)+
+  geom_vline(xintercept = 0, linetype = "dotted", color = "black", linewidth = 0.5) +
+  facet_wrap(~ party, ncol = 1, labeller = as_labeller(party_labels)) +
+  scale_fill_manual(values = party_colors, guide = "none") +
+  scale_y_continuous(breaks = c(0,6), limits = c(0, 8)) +
+  scale_x_continuous(breaks = seq(-0.4, 0.4, by = 0.2), limits = c(-0.5, 0.5)) +
+  labs(
+    x = "Coefficient Value",
+    y = "Density"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    strip.text = element_text(face = "bold",size = 13, color = "black"),
+    strip.background = element_rect(fill = "gray90", color = "white"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(linetype = "dashed", linewidth = 0.4),
+    plot.margin = margin(t = 10, r = 10, b = 10, l = 10, unit = "pt")
+  )
+
+print(p_b_pos_smi_2023)
+
+ggsave("Posterior Distributions of the SMI Coefficient (2023).png", p_b_pos_smi_2023, width = 6, height = 5, dpi = 200, units = "in")
+
+```
+
+
+```{r}
+#smi
+df_b_smi_2023 <- df_beta_long_2023 %>%
+  filter(predictor == "smi_norm") %>%
+  mutate(party = factor(party, levels = party_levels))
+
+p_beta_smi_2023 <- ggplot(df_b_smi_2023, aes(x = value, fill = party)) +
+  geom_density(alpha = 0.8, adjust = 1) +
+  facet_wrap(~ party, ncol = 1, labeller = as_labeller(party_labels)) +
+  scale_fill_manual(values = party_colors, guide = "none") +
+  labs(
+    title = "Posterior Distributions of the SMI Coefficient",
+    x = "Coefficient Value",
+    y = "Density"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    strip.text = element_text(face = "bold",size = 13, color = "black"),
+    strip.background = element_rect(fill = "gray90", color = "white"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank()
+  )
+
+print(p_beta_smi_2023)
+
+```
+
+```{r}
+#immigration
+df_b_pos_immig_2023 <- df_beta_long_2023 %>%
+  filter(predictor == "immigration_norm") %>%
+  group_by(party) %>%
+  do(data.frame(density(.$value)[c("x", "y")])) %>%
+  ungroup() %>%
+  mutate(party = factor(party, levels = party_levels),
+         pos_val = ifelse(x>0, y, 0))
+
+p_b_pos_immig_2023 <- ggplot(df_b_pos_immig_2023, aes(x = x)) +
+  geom_line(aes(y=y), color="black", linewidth=0.5)+
+  geom_area(aes(y=pos_val, fill=party), alpha=0.6)+
+  geom_vline(xintercept = 0, linetype = "dotted", color = "black", linewidth = 0.5) +
+  facet_wrap(~ party, ncol = 1, labeller = as_labeller(party_labels)) +
+  scale_fill_manual(values = party_colors, guide = "none") +
+  scale_y_continuous(breaks = c(0,6), limits = c(0, 8)) +
+  scale_x_continuous(breaks = c(-0.6, -0.4, -0.2, 0, 0.2, 0.4), limits = c(-0.6, 0.4)) +
+  labs(
+    x = "Coefficient Value",
+    y = "Density"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    strip.text = element_text(face = "bold",size = 13, color = "black"),
+    strip.background = element_rect(fill = "gray90", color = "white"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(linetype = "dashed", linewidth = 0.4),
+    plot.margin = margin(t = 10, r = 10, b = 10, l = 10, unit = "pt")
+  )
+
+print(p_b_pos_immig_2023)
+
+ggsave("Posterior Distributions of the Immigration Coefficient (2023).png", p_b_pos_immig_2023, width = 6, height = 5, dpi = 200, units = "in")
+
+
+```
+
+
+```{r}
+#immigration
+df_b_immig_2023 <- df_beta_long_2023 %>%
+  filter(predictor == "immigration_norm") %>%
+  mutate(party = factor(party, levels = party_levels))
+
+p_beta_immig_2023 <- ggplot(df_b_immig_2023, aes(x = value, fill = party)) +
+  geom_density(alpha = 0.8, adjust = 1) +
+  facet_wrap(~ party, ncol = 1) +
+  scale_fill_manual(values = party_colors, guide = "none") +
+  labs(
+    title = "Posterior Distributions of the Immigration Coefficient",
+    x = "Coefficient Value",
+    y = "Density"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    strip.text = element_text(face = "bold",size = 13, color = "black"),
+    strip.background = element_rect(fill = "gray90", color = "white"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank()
+  )
+
+print(p_beta_immig_2023)
+
+```
+
+```{r}
+cat("\n--- Posterior Summary (Slopes) ---\n")
+df_summary <- df_beta_long_2023 %>%
+  group_by(party, predictor) %>%
+  summarise(
+    mean = mean(value),
+    lower = quantile(value, 0.025),
+    upper = quantile(value, 0.975),
+    significant = (lower > 0) | (upper < 0),
+    .groups = 'drop'
+  )
+print(df_summary)
+
+```
+
+
+Plot the beta0s by party.
+```{r
+plot_beta0s_2023 <- ggplot(df_beta0_long_2023, aes(x = value, fill = party)) +
+  geom_density(alpha = 0.7, adjust = 1) +
+  facet_wrap(~ party, ncol = 1) +
+  scale_fill_manual(values = party_colors, guide = "none") +
+  labs(
+    title = "Posterior Distribution of Intercepts (b0) for All Parties",
+    x = "Intercept Value",
+    y = "Density"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    strip.text = element_text(face = "bold", size = 13, color = "black"),
+    strip.background = element_rect(fill = "gray90", color = "white"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank()
+  )
+
+print(plot_beta0s_2023)
+
+```
+
+
+```{r}
+plot_beta0_violin_2023 <- ggplot(df_beta0_share_long_2023, aes(x = party, y = base_vote_share_percent, fill = party)) +
+  geom_violin(alpha = 0.8, scale = "width", trim = FALSE, width = 0.6) +
+  geom_boxplot(width = 0.1, color = "white", alpha = 0.5, outlier.shape = NA) +
+  scale_fill_manual(values = party_colors, guide = "none") +
+  scale_x_discrete(labels = party_labels) +
+  labs(
+    title = "Distribution of Base Support by Parties (2023)",
+    x = "Party",
+    y = "Base Vote Share (%)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(face = "bold", size = 12, color = "black"),
+    panel.grid.minor = element_blank()
+  )
+
+print(plot_beta0_violin_2023)
+
+```
+
+
+```{r}
+cat("\n--- Summary of Base Support Distributions ---\n")
+cat("Values represent Predicted Vote Share (%) if Predictors = 0\n\n")
+
+summary_b0_2023 <- df_beta0_share_long_2023 %>%
+  group_by(party) %>%
+  summarise(
+    mean_share = mean(base_vote_share_percent),
+    median_share = median(base_vote_share_percent),
+    lower_ci = quantile(base_vote_share_percent, 0.025),
+    upper_ci = quantile(base_vote_share_percent, 0.975),
+    min = min(base_vote_share_percent),
+    max = max(base_vote_share_percent),
+    .groups = "drop"
+  ) %>%
+  mutate(party = factor(party, levels = party_levels)) %>%
+  arrange(party)
+
+print(summary_b0_2023)
+```
+
+
+```{r}
+p_b0_2023 <- ggplot(summary_b0_2023, aes(x = party)) +
+  #actual result
+  geom_rect(data = df_results_2023,
+            aes(width = 0.4,
+                ymin = 0, ymax = vote_share, fill = party, alpha = 0.6),
+            color = NA, show.legend = FALSE) +
+  #95% CI
+  geom_rect(aes(width = 0.3,
+                ymin = lower_ci / 100, ymax = upper_ci / 100),
+            fill = "gray70", alpha = 0.6, color = NA) +
+  #mean
+  geom_point(aes(y = mean_share / 100),
+             shape = 21, fill = "white", color = "black", size = 3, stroke = 0.5) +
+  #scale y to percentage
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     limits = c(0, 0.4),
+                     expand = expansion(mult = c(0, 0.1))) +
+  #party colors
+  scale_fill_manual(values = party_colors) +
+  #values next to bars
+  geom_text(aes(y = mean_share / 100, label = sprintf("%.1f", mean_share)),
+            hjust = -0.9, size = 4.5, color = "gray40") +
+  geom_text(data = df_results_2023, aes(y = vote_share, label = sprintf("%.1f", vote_share * 100)),
+            hjust = 1.9, size = 4.5, color = "black") +
+  #party names lowercase to capital
+  scale_x_discrete(labels = party_labels) +
+  labs(
+    x = "Party",
+    y = "Vote Share"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "gray90", linetype = "dashed"),
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(face = "bold", size = 12),
+    axis.text.y = element_text(size = 12),
+    axis.ticks.x = element_blank(),
+    plot.margin = margin(t = 10, r = 10, b = 10, l = 10, unit = "pt")
+  )
+
+print(p_b0_2023)
+
+ggsave("Distribution of Base Support by Parties (2023).png", p_b0_2023, width = 8, height = 5, dpi = 200, units = "in")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

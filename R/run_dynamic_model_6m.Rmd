@@ -1,0 +1,1806 @@
+---
+title: "run_dynamic_model_6m"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+library(rstan)
+library(readr)
+library(tidyr)
+library(ggplot2)
+library(dplyr)
+library(scales)
+library(bayesplot)
+
+```
+
+
+###Colors
+```{r}
+#party colors and preferred order of parties
+
+party_colors <- c(
+  "fdp" = "cornflowerblue",
+  "cvp" = "darkorange",
+  "sp" = "red2",
+  "svp" = "green4",
+  "other" = "plum2"
+)
+
+party_levels <- c("fdp", "cvp", "sp", "svp", "other")
+party_labels <- c(
+  "fdp" = "FDP",
+  "cvp" = "CVP",
+  "sp" = "SP",
+  "svp" = "SVP",
+  "other" = "Other"
+)
+
+#predictors
+predictor_cols <- c("smi_norm", "health_insurance_norm", "immigration_norm")
+```
+
+###Election Data
+
+```{r}
+#election data
+election_data <- read_csv("swiss election data.csv")
+
+results_2019 <- election_data %>%
+  filter(year == 2019) %>%
+  mutate(vote_share = vote_share *100)
+results_2019$party <- factor(results_2019$party, levels = party_levels)
+
+results_2023 <- election_data %>%
+  filter(year == 2023) %>%
+  mutate(vote_share = vote_share *100)
+results_2023$party <- factor(results_2023$party, levels = party_levels)
+
+```
+
+###Polling Data
+
+Sort through the Swiss polling data.
+
+```{r}
+swiss_polling_data <- read_csv("swiss polling data.csv")
+
+company_labels <- c(
+  "fors" = "FORS",
+  "sotomo" = "Sotomo",
+  "tamedia" = "Tamedia"
+)
+
+#convert polling_period strings to date
+swiss_polling_data$polling_period <- as.Date(swiss_polling_data$polling_period, format = "%d.%m.%Y")
+
+#separate the polling data by election year
+SPD_2019 <- swiss_polling_data %>%
+  filter(year == 2019)
+
+SPD_2023 <- swiss_polling_data %>%
+  filter(year == 2023)
+
+```
+
+```{r}
+#election days
+T_2019 <- as.Date("2019-10-20")
+T_2023 <- as.Date("2023-10-22")
+
+```
+
+```{r}
+#list of unique polling days (60 weeks days prior to election day)
+start_2019 = T_2019 - 413
+start_2023 = T_2023 - 413
+
+all_weeks_2019 <- seq(from = start_2019, to = T_2019, by = "week")
+all_weeks_2023 <- seq(from = start_2023, to = T_2023, by = "week")
+
+if (tail(all_weeks_2019, 1) != T_2019) {
+  all_weeks_2019 <- c(all_weeks_2019, T_2019)
+  message("Added Election Day to 2019 timeline manually.")
+}
+
+if (tail(all_weeks_2023, 1) != T_2023) {
+  all_weeks_2023 <- c(all_weeks_2023, T_2023)
+  message("Added Election Day to 2023 timeline manually")
+}
+```
+
+
+```{r}
+#data frames with time id and days to election
+
+SPD_2019_time <- SPD_2019 %>%
+  mutate(
+    days_from_start = as.numeric(polling_period - start_2019),
+    time_id = floor(days_from_start / 7) + 1,
+    dte = as.numeric(difftime(T_2019, polling_period, units = "days"))
+    ) %>%
+  filter(time_id >= 1 & time_id <= length(all_weeks_2019))
+
+SPD_2023_time <- SPD_2023 %>%
+  mutate(
+    days_from_start = as.numeric(polling_period - start_2023),
+    time_id = floor(days_from_start / 7) + 1,
+    dte = as.numeric(difftime(T_2023, polling_period, units = "days"))
+    ) %>%
+  filter(time_id >= 1 & time_id <= length(all_weeks_2023))
+
+```
+
+```{r}
+#polling data filtered so remove the last 6 months of data
+cutoff_6m_2019 <- T_2019 - 183
+cutoff_6m_2023 <- T_2023 - 183
+
+SPD_2019_time <- SPD_2019_time %>%
+  filter(polling_period <= cutoff_6m_2019)
+
+SPD_2023_time <- SPD_2023_time %>%
+  filter(polling_period <= cutoff_6m_2023)
+```
+
+
+```{r}
+#company ids <-  changed order so sotomo is baseline
+companies <- c("tamedia", "fors", "sotomo")
+
+SPD_2019_time_comp <- SPD_2019_time %>%
+  mutate(
+    company_id = match(polling_company, companies)
+  )
+
+SPD_2023_time_comp <- SPD_2023_time %>%
+  mutate(
+    company_id = match(polling_company, companies)
+  )
+
+```
+
+```{r}
+#poll id
+poll_id_2019 <- SPD_2019_time_comp %>%
+  distinct(polling_company, time_id) %>%
+  arrange(time_id, polling_company) %>%
+  mutate(poll_id = row_number())
+
+SPD_2019_id <- SPD_2019_time_comp %>%
+  left_join(poll_id_2019, by = c("polling_company", "time_id"))
+
+SPD_2019_id <- SPD_2019_id %>%
+  filter(!is.na(time_id)) %>%
+  arrange(poll_id)
+
+poll_id_2023 <- SPD_2023_time_comp %>%
+  distinct(polling_company, time_id) %>%
+  arrange(time_id, polling_company) %>%
+  mutate(poll_id = row_number())
+
+SPD_2023_id <- SPD_2023_time_comp %>%
+  left_join(poll_id_2023, by = c("polling_company", "time_id"))
+
+SPD_2023_id <- SPD_2023_id %>%
+  filter(!is.na(time_id)) %>%
+  arrange(poll_id)
+
+```
+
+```{r}
+#y for Stan [N_polls, N_p]
+y_2019 <- SPD_2019_id %>%
+  select(poll_id, party, counts) %>%
+  pivot_wider(
+    id_cols = poll_id,
+    names_from = party,
+    values_from = counts,
+    values_fill = 0
+  ) %>%
+  select(all_of(party_levels)) %>%
+  as.matrix()
+
+y_2023 <- SPD_2023_id %>%
+  select(poll_id, party, counts) %>%
+  pivot_wider(
+    id_cols = poll_id,
+    names_from = party,
+    values_from = counts,
+    values_fill = 0
+  ) %>%
+  select(all_of(party_levels)) %>%
+  as.matrix()
+
+```
+
+```{r}
+poll_metadata_2019 <- SPD_2019_id %>%
+  group_by(poll_id) %>%
+  slice(1) %>%
+  ungroup()
+
+poll_metadata_2023 <- SPD_2023_id %>%
+  group_by(poll_id) %>%
+  slice(1) %>%
+  ungroup()
+
+```
+
+Import EWMA csv files
+```{r}
+ewma_2019 <- read_csv("ewma_2019.csv")
+ewma_2019_6m <- ewma_2019 %>%
+  filter(polling_period >= start_2019 & polling_period<= cutoff_6m_2019)
+
+ewma_2023 <- read_csv("ewma_2023.csv")
+ewma_2023_6m <- ewma_2023 %>%
+  filter(polling_period >= start_2023 & polling_period<= cutoff_6m_2023)
+
+```
+
+
+###Fundamentals Data
+
+Sort through the Swiss election data.
+
+```{r}
+fundamentals_2019 <- read_csv("fundamentals_predictions_2019.csv")
+vE_2019 <- fundamentals_2019$mean_pred[match(party_levels, fundamentals_2019$party)]
+vE_sd_2019 <- fundamentals_2019$sd_pred[match(party_levels, fundamentals_2019$party)]
+
+```
+
+```{r}
+fdp_pred_2019 <- fundamentals_2019 %>%
+  filter(party == "fdp")
+
+cvp_pred_2019 <- fundamentals_2019 %>%
+  filter(party == "cvp")
+
+sp_pred_2019 <- fundamentals_2019 %>%
+  filter(party == "sp")
+
+svp_pred_2019 <- fundamentals_2019 %>%
+  filter(party == "svp")
+
+other_pred_2019 <- fundamentals_2019 %>%
+  filter(party == "other")
+
+```
+
+
+```{r}
+fundamentals_2023 <- read_csv("fundamentals_predictions_2023.csv")
+
+vE_2023 <- fundamentals_2023$mean_pred[match(party_levels, fundamentals_2023$party)]
+vE_sd_2023 <- fundamentals_2023$sd_pred[match(party_levels, fundamentals_2023$party)]
+
+```
+
+```{r}
+fdp_pred_2023 <- fundamentals_2023 %>%
+  filter(party == "fdp")
+
+cvp_pred_2023 <- fundamentals_2023 %>%
+  filter(party == "cvp")
+
+sp_pred_2023 <- fundamentals_2023 %>%
+  filter(party == "sp")
+
+svp_pred_2023 <- fundamentals_2023 %>%
+  filter(party == "svp")
+
+other_pred_2023 <- fundamentals_2023 %>%
+  filter(party == "other")
+
+```
+
+###RUN DYNAMIC MODEL
+
+```{r}
+N_p <- length(party_levels)
+N_comp <- length(companies)
+
+N_polls_2019 <- nrow(y_2019)
+N_polls_2023 <- nrow(y_2023)
+
+N_periods_2019 <- length(all_weeks_2019)
+N_periods_2023 <- length(all_weeks_2023)
+
+comp_id_2019 <- poll_metadata_2019$company_id
+comp_id_2023 <- poll_metadata_2023$company_id
+
+date_2019 <- poll_metadata_2019$time_id
+date_2023 <- poll_metadata_2023$time_id
+
+#y_2019 defined above
+#y_2023 defined above
+
+#vE defined above
+#vE_sd defined above
+
+```
+
+```{r}
+#list of data for stan
+dynamic_stan_2019 <- list(
+  N_p = N_p,
+  N_comp = N_comp,
+  N_polls = N_polls_2019,
+  N_periods = N_periods_2019,
+  comp_id = comp_id_2019,
+  date = date_2019,
+  y = y_2019,
+  vE = vE_2019,
+  vE_sd = vE_sd_2019
+)
+
+dynamic_stan_2023 <- list(
+  N_p = N_p,
+  N_comp = N_comp,
+  N_polls = N_polls_2023,
+  N_periods = N_periods_2023,
+  comp_id = comp_id_2023,
+  date = date_2023,
+  y = y_2023,
+  vE = vE_2023,
+  vE_sd = vE_sd_2023
+)
+```
+
+```{r
+}
+dynamic_fit_2019_6m <- stan(
+  file = "dynamic_model.stan",
+  data = dynamic_stan_2019,
+  iter = 4000,
+  warmup = 2000,
+  chains = 4,
+  seed = 266,
+  refresh = 500
+)
+
+saveRDS(dynamic_fit_2019_6m, "stan_dynamic_fit_2019_6m.rds")
+
+```
+
+```{r
+}
+dynamic_fit_2023_6m <- stan(
+  file = "dynamic_model.stan",
+  data = dynamic_stan_2023,
+  iter = 2000,
+  chains = 4,
+  seed = 266,
+  refresh = 500
+)
+
+saveRDS(dynamic_fit_2023_6m, "stan_dynamic_fit_2023_6m.rds")
+```
+
+
+###Extract Data
+
+```{r}
+#read stan data without running code again
+#
+dynamic_fit_2019_6m <- readRDS("stan_dynamic_fit_2019_6m.rds")
+#
+dynamic_fit_2023_6m <- readRDS("stan_dynamic_fit_2023_6m.rds")
+```
+
+
+####2019
+```{r}
+dynamic_forecast_2019_6m <- rstan::extract(dynamic_fit_2019_6m, "forecast_final")$forecast_final
+dynamic_trajectory_2019_6m <- rstan::extract(dynamic_fit_2019_6m, "trajectory")$trajectory
+
+N_iter_2019_6m <- dim(dynamic_trajectory_2019_6m)[1]
+N_time_2019_6m <- dim(dynamic_trajectory_2019_6m)[2]
+N_parties_2019_6m <- dim(dynamic_trajectory_2019_6m)[3]
+
+```
+
+```{r}
+df_dynamic_forecast_2019_6m <- as.data.frame(dynamic_forecast_2019_6m)
+colnames(df_dynamic_forecast_2019_6m) = party_levels
+
+```
+
+```{r}
+df_dynamic_trajectory_2019_6m <- as.data.frame.table(dynamic_trajectory_2019_6m, responseName = "share") 
+df_dynamic_trajectory_2019_6m <- df_dynamic_trajectory_2019_6m %>%
+  mutate(
+    iter = as.numeric(iterations),
+    time_id = as.numeric(Var2),
+    party_id = as.numeric(Var3)
+  ) %>%
+  mutate(
+    party = party_levels[party_id],
+    party = factor(party, levels = party_levels),
+    date = all_weeks_2019[time_id]
+  ) %>%
+  select(iter, time_id, date, party, share)
+
+```
+
+```{r}
+df_dynamic_summary_2019_6m <- df_dynamic_trajectory_2019_6m %>%
+  group_by(date, party) %>%
+  summarise(
+    mean_pred = mean(share),
+    sd_pred = sd(share),
+    lower_ci = quantile(share, 0.025),
+    upper_ci = quantile(share, 0.975),
+    .groups = "drop"
+  )
+
+write_csv(df_dynamic_summary_2019_6m, "dynamic_predictions_2019_6m.csv")
+
+```
+
+```{r}
+#house effects
+he_dyn_2019_6m <- rstan::extract(dynamic_fit_2019_6m, "house_effect_raw")$house_effect_raw
+df_he_2019_6m <- as.data.frame.table(he_dyn_2019_6m, responseName = "bias") %>%
+  mutate(
+    iteration = as.numeric(iterations),
+    company_id = as.numeric(Var2),
+    party_id = as.numeric(Var3),
+    company = c("tamedia", "fors")[company_id],
+    party = c("fdp", "cvp", "sp", "svp")[party_id]
+  ) %>%
+  select(iteration, company, party, bias)
+
+df_he_summary_2019_6m <- df_he_2019_6m %>%
+  group_by(company, party) %>%
+  summarise(
+    mean_bias = mean(bias),
+    lower_ci = quantile(bias, 0.025),
+    upper_ci = quantile(bias, 0.975),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    mean_bias = mean_bias *100,
+    lower_ci = lower_ci *100,
+    upper_ci = upper_ci *100
+  )
+
+print(df_he_summary_2019_6m)
+
+write_csv(df_he_summary_2019_6m, "dynamic_house_effects_2019_6m.csv")
+
+```
+These biases are relative to the sotomo polls.
+
+
+```{r}
+#print predictions dynamic model vs predictions fundamentals model vs polls vs election outcomes
+df_dyn_result_2019_6m <- df_dynamic_summary_2019_6m[296:300, ]
+df_dyn_result_2019_6m$party <- factor(df_dyn_result_2019_6m$party, levels = party_levels)
+
+cat("---Dynamic Model Prediction 2019---\n")
+print(df_dyn_result_2019_6m)
+
+cat("\n---Fundamentals Model Prediction 2019---\n")
+print(fundamentals_2019)
+
+cat("\n---Poll Prediction 2019---\n")
+print(tail(ewma_2019_6m, 1))
+
+cat("\n---Election Results 2019---\n")
+print(results_2019)
+
+```
+
+
+####2023
+```{r}
+dynamic_forecast_2023_6m <- rstan::extract(dynamic_fit_2023_6m, "forecast_final")$forecast_final
+dynamic_trajectory_2023_6m <- rstan::extract(dynamic_fit_2023_6m, "trajectory")$trajectory
+
+N_iter_2023_6m <- dim(dynamic_trajectory_2023_6m)[1]
+N_time_2023_6m <- dim(dynamic_trajectory_2023_6m)[2]
+N_parties_2023_6m <- dim(dynamic_trajectory_2023_6m)[3]
+
+```
+
+```{r}
+df_dynamic_2023_6m <- as.data.frame(dynamic_forecast_2023_6m)
+colnames(df_dynamic_2023_6m) = party_levels
+
+```
+
+```{r}
+df_dynamic_trajectory_2023_6m <- as.data.frame.table(dynamic_trajectory_2023_6m, responseName = "share")
+df_dynamic_trajectory_2023_6m <- df_dynamic_trajectory_2023_6m %>%
+  mutate(
+    iter = as.numeric(iterations),
+    time_id = as.numeric(Var2),
+    party_id = as.numeric(Var3)
+  ) %>%
+  mutate(
+    party = party_levels[party_id],
+    party = factor(party, levels = party_levels),
+    date = all_weeks_2023[time_id]
+  ) %>%
+  select(iter, time_id, date, party, share)
+```
+
+```{r}
+df_dynamic_summary_2023_6m <- df_dynamic_trajectory_2023_6m %>%
+  group_by(date, party) %>%
+  summarise(
+    mean_pred = mean(share),
+    sd_pred = sd(share),
+    lower_ci = quantile(share, 0.025),
+    upper_ci = quantile(share, 0.975),
+    .groups = "drop"
+  )
+
+write_csv(df_dynamic_summary_2023_6m, "dynamic_predictions_2023_6m.csv")
+
+```
+
+```{r}
+#house effects
+he_dyn_2023_6m <- rstan::extract(dynamic_fit_2023_6m, "house_effect_raw")$house_effect_raw
+df_he_2023_6m <- as.data.frame.table(he_dyn_2023_6m, responseName = "bias") %>%
+  mutate(
+    iteration = as.numeric(iterations),
+    company_id = as.numeric(Var2),
+    party_id = as.numeric(Var3),
+    company = c("tamedia", "sotomo")[company_id],
+    party = c("fdp", "cvp", "sp", "svp")[party_id]
+  ) %>%
+  select(iteration, company, party, bias)
+
+df_he_summary_2023_6m <- df_he_2023_6m %>%
+  group_by(company, party) %>%
+  summarise(
+    mean_bias = mean(bias),
+    lower_ci = quantile(bias, 0.025),
+    upper_ci = quantile(bias, 0.975),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    mean_bias = mean_bias *100,
+    lower_ci = lower_ci *100,
+    upper_ci = upper_ci *100
+  )
+
+print(df_he_summary_2023_6m)
+
+write_csv(df_he_summary_2023_6m, "dynamic_house_effects_2023_6m.csv")
+
+```
+Recall biases are relative to sotomo polls.
+
+
+```{r}
+#print predictions dynamic model vs predictions fundamentals model vs polls vs election outcomes
+
+cat("---Dynamic Model Prediction 2023---\n")
+df_dyn_result_2023_6m <- df_dynamic_summary_2023_6m[296:300, ]
+print(df_dyn_result_2023_6m)
+
+cat("\n---Fundamentals Model Prediction 2023---\n")
+print(fundamentals_2023)
+
+cat("\n---Poll Prediction 2023---\n")
+print(tail(ewma_2023_6m, 1))
+
+cat("\n---Election Results 2023---\n")
+print(results_2023)
+```
+
+
+###Plots
+
+####2019
+
+
+```{r}
+p_ci_2019_6m <- ggplot(df_dyn_result_2019_6m, aes(x = party)) +
+  #actual result
+  geom_rect(data = results_2019,
+            aes(width = 0.4,
+                ymin = 0, ymax = vote_share / 100, fill = party, alpha = 0.6),
+            color = NA, show.legend = FALSE) +
+  #95% CI
+  geom_rect(aes(width = 0.3,
+                ymin = lower_ci, ymax = upper_ci),
+            fill = "gray50", alpha = 0.6, color = NA) +
+  #mean
+  geom_point(aes(y = mean_pred),
+             shape = 21, fill = "white", color = "black", size = 3, stroke = 0.5) +
+  #scale y to percentage
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     limits = c(0, 0.4),
+                     expand = expansion(mult = c(0, 0.1))) +
+  #party colors
+  scale_fill_manual(values = party_colors) +
+  #values next to bars
+  geom_text(aes(y = mean_pred, label = sprintf("%.1f", mean_pred * 100)),
+            hjust = -0.9, size = 4.5, color = "gray40") +
+  geom_text(data = results_2019, aes(y = vote_share / 100, label = sprintf("%.1f", vote_share)),
+            hjust = 1.9, size = 4.5, color = "black") +
+  #party names lowercase to capital
+  scale_x_discrete(labels = party_labels) +
+  labs(
+    x = "Party",
+    y = "Vote Share"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "gray90", linetype = "dashed"),
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(face = "bold", size = 12),
+    axis.text.y = element_text(size = 12),
+    axis.ticks.x = element_blank(),
+    plot.margin = margin(t = 10, r = 10, b = 10, l = 10, unit = "pt")
+  )
+
+print(p_ci_2019_6m)
+
+ggsave("Dynamic Prediction 6 Months Prior (2019).png", p_ci_2019_6m, width = 8, height = 5, dpi = 200, units = "in")
+
+```
+
+
+
+Check if the results fall within the CI
+```{r}
+check_dyn_2019_6m <- left_join(df_dyn_result_2019_6m, results_2019, by = "party") %>%
+  mutate(
+    within_ci = vote_share/100 >= lower_ci & vote_share/100 <= upper_ci
+  )
+
+cat("\nCheck whether the results lie within the 95% CI:\n")
+print(check_dyn_2019_6m %>% select(party, vote_share, lower_ci, upper_ci, within_ci))
+
+```
+
+```{r}
+p_all_dyn_2019_6m <- ggplot(df_dynamic_summary_2019_6m %>% filter(date >= start_2019), aes(x=date, y=mean_pred*100, color=party))+
+  geom_line(linewidth=1)+
+  geom_ribbon(aes(ymin=lower_ci*100, ymax=upper_ci*100, fill=party), alpha=0.2, color=NA)+
+  #geom_point(data=SPD_2019 %>% filter(polling_period >= start_2019),
+             #aes(x=polling_period, y=poll_vote_share, group="polling company"),
+             #alpha=0.3, size=0.5, color="gray40")+
+  scale_color_manual(name = "", values=c("dodgerblue4", "darkorange3", "red3", "darkgreen", "plum3"), labels = party_labels)+
+  scale_fill_manual(name = "", values=party_colors, labels = party_labels)+
+  scale_y_continuous(limits = c(5, 40), breaks = seq(10, 40, by = 10), minor_breaks = seq(5, 40, by = 5), expand = expansion(0))+
+  labs(
+    x="Date",
+    y="Vote Share (%)"
+  )+
+  theme_minimal()+
+  theme(
+    legend.position = "bottom",
+    plot.margin = margin(t = 10, r = 10, b = 10, l = 10, unit = "pt"))
+
+
+
+print(p_all_dyn_2019_6m)
+
+ggsave("Dynamic Forecast Trajectory 6 Months Prior (2019).png", p_all_dyn_2019_6m, width = 8, height = 4, dpi = 200, units = "in")
+
+```
+
+
+
+
+#####BY PARTY
+Data
+```{r}
+#fdp 2019
+
+fdp_result_2019 <- results_2019$vote_share[1]
+
+fdp_polls_2019_6m <- SPD_2019 %>%
+  filter(party == "fdp") %>%
+  arrange(polling_period) %>%
+  filter(polling_period <= cutoff_6m_2019)
+
+fdp_ewma_2019_6m <- ewma_2019_6m %>%
+  select(polling_period, ewma_fdp) %>%
+  rename(ewma = ewma_fdp)
+
+#fdp_pred_2019 = fundamentals prediction
+
+fdp_dyn_2019_6m <- df_dynamic_summary_2019_6m %>%
+  filter(party == "fdp") %>%
+  mutate(
+    mean_pred = mean_pred * 100,
+    sd_pred = sd_pred * 100,
+    lower_ci = lower_ci * 100,
+    upper_ci = upper_ci * 100
+  )
+
+
+
+
+#cvp 2019
+
+cvp_result_2019 <- results_2019$vote_share[2]
+
+cvp_polls_2019_6m <- SPD_2019 %>%
+  filter(party == "cvp") %>%
+  arrange(polling_period) %>%
+  filter(polling_period <= cutoff_6m_2019)
+
+cvp_ewma_2019_6m <- ewma_2019_6m %>%
+  select(polling_period, ewma_cvp) %>%
+  rename(ewma = ewma_cvp)
+
+#cvp_pred_2019 = fundamentals prediction
+
+cvp_dyn_2019_6m <- df_dynamic_summary_2019_6m %>%
+  filter(party == "cvp") %>%
+  mutate(
+    mean_pred = mean_pred * 100,
+    sd_pred = sd_pred * 100,
+    lower_ci = lower_ci * 100,
+    upper_ci = upper_ci * 100
+  )
+
+
+
+
+#sp 2019
+
+sp_result_2019 <- results_2019$vote_share[3]
+
+sp_polls_2019_6m <- SPD_2019 %>%
+  filter(party == "sp") %>%
+  arrange(polling_period) %>%
+  filter(polling_period <= cutoff_6m_2019)
+
+sp_ewma_2019_6m <- ewma_2019_6m %>%
+  select(polling_period, ewma_sp) %>%
+  rename(ewma = ewma_sp)
+
+#sp_pred_2019 = fundamentals prediction
+
+sp_dyn_2019_6m <- df_dynamic_summary_2019_6m %>%
+  filter(party == "sp") %>%
+  mutate(
+    mean_pred = mean_pred * 100,
+    sd_pred = sd_pred * 100,
+    lower_ci = lower_ci * 100,
+    upper_ci = upper_ci * 100
+  )
+
+
+
+#svp 2019
+
+svp_result_2019 <- results_2019$vote_share[4]
+
+svp_polls_2019_6m <- SPD_2019 %>%
+  filter(party == "svp") %>%
+  arrange(polling_period) %>%
+  filter(polling_period <= cutoff_6m_2019)
+
+svp_ewma_2019_6m <- ewma_2019_6m %>%
+  select(polling_period, ewma_svp) %>%
+  rename(ewma = ewma_svp)
+
+#svp_pred_2019 = fundamentals prediction
+
+svp_dyn_2019_6m <- df_dynamic_summary_2019_6m %>%
+  filter(party == "svp") %>%
+  mutate(
+    mean_pred = mean_pred * 100,
+    sd_pred = sd_pred * 100,
+    lower_ci = lower_ci * 100,
+    upper_ci = upper_ci * 100
+  )
+
+
+
+#other 2019
+
+other_result_2019 <- results_2019$vote_share[5]
+
+other_polls_2019_6m <- SPD_2019 %>%
+  filter(party == "other") %>%
+  arrange(polling_period) %>%
+  filter(polling_period <= cutoff_6m_2019)
+
+other_ewma_2019_6m <- ewma_2019_6m %>%
+  select(polling_period, ewma_other) %>%
+  rename(ewma = ewma_other)
+
+#other_pred_2019 = fundamentals prediction
+
+other_dyn_2019_6m <- df_dynamic_summary_2019_6m %>%
+  filter(party == "other") %>%
+  mutate(
+    mean_pred = mean_pred * 100,
+    sd_pred = sd_pred * 100,
+    lower_ci = lower_ci * 100,
+    upper_ci = upper_ci * 100
+  )
+
+```
+
+Plots
+```{r}
+#fdp 2019
+p_dyn_fdp_2019_6m <- ggplot() +
+  #dynamic model ribbon (95% ci)
+  geom_ribbon(
+    data = fdp_dyn_2019_6m,
+    aes(x = date, ymin = lower_ci, ymax = upper_ci),
+    fill = party_colors["fdp"],
+    alpha = 0.2,
+    inherit.aes = FALSE
+  ) +
+  #fundamentals (95% ci)
+  geom_rect(
+    data = fdp_pred_2019,
+    aes(xmin = start_2019-14, xmax = fdp_dyn_2019_6m$date[1], ymin = lower_ci * 100, ymax = upper_ci * 100),
+    fill = "gray80",
+    alpha = 0.4,
+    inherit.aes = FALSE
+  ) +
+  #actual result
+  geom_hline(
+    yintercept = fdp_result_2019,
+    color = party_colors["fdp"],
+    linewidth = 1,
+    linetype = "solid"
+  ) +
+  #poll points
+  geom_point(
+    data = fdp_polls_2019_6m %>% filter(polling_period >= start_2019),
+    aes(x = polling_period, y = poll_vote_share, shape = factor(polling_company)),
+    size = 2,
+    color = "black"
+  ) +
+  #EWMA line
+  geom_line(
+    data = fdp_ewma_2019_6m,
+    aes(x = polling_period, y = ewma),
+    color = "black",
+    linewidth = 0.5
+  ) +
+  #fundamentals mean
+  geom_hline(
+    yintercept = fdp_pred_2019$mean_pred * 100,
+    color = "black",
+    linewidth = 0.4,
+    linetype = "dashed"
+  ) +
+  #dynamic model mean trajectory
+  geom_line(
+    data = fdp_dyn_2019_6m,
+    aes(x = date, y = mean_pred),
+    color = "dodgerblue4",
+    linewidth = 0.8
+  ) +
+  scale_y_continuous(limits = c(5, 30), breaks = seq(5, 30, by = 5), minor_breaks = seq(5, 30, by = 2.5), expand = expansion(0)) +
+  labs(
+    x = "Date",
+    y = "Vote Share (%)",
+    shape = "Polling Company"
+  ) +
+  scale_shape_discrete(name = "", labels = company_labels) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold"),
+    plot.margin = margin(t = 20, r = 20, b = 0, l = 10, unit = "pt")
+  )
+
+print(p_dyn_fdp_2019_6m)
+
+ggsave("FDP Pre-Election Polling vs. Dynamic Forecast 6 Months Prior (2019).png", p_dyn_fdp_2019_6m, width = 6, height = 4, dpi = 200, units = "in")
+
+
+
+#cvp 2019
+
+p_dyn_cvp_2019_6m <- ggplot() +
+  #dynamic model ribbon (95% ci)
+  geom_ribbon(
+    data = cvp_dyn_2019_6m,
+    aes(x = date, ymin = lower_ci, ymax = upper_ci),
+    fill = party_colors["cvp"],
+    alpha = 0.2,
+    inherit.aes = FALSE
+  ) +
+  #fundamentals (95% ci)
+  geom_rect(
+    data = cvp_pred_2019,
+    aes(xmin = start_2019-14, xmax = cvp_dyn_2019_6m$date[1], ymin = lower_ci * 100, ymax = upper_ci * 100),
+    fill = "gray80",
+    alpha = 0.4,
+    inherit.aes = FALSE
+  ) +
+  #actual result
+  geom_hline(
+    yintercept = cvp_result_2019,
+    color = party_colors["cvp"],
+    linewidth = 1,
+    linetype = "solid"
+  ) +
+  #poll points
+  geom_point(
+    data = cvp_polls_2019_6m %>% filter(polling_period >= start_2019),
+    aes(x = polling_period, y = poll_vote_share, shape = factor(polling_company)),
+    size = 2,
+    color = "black"
+  ) +
+  #EWMA line
+  geom_line(
+    data = cvp_ewma_2019_6m,
+    aes(x = polling_period, y = ewma),
+    color = "black",
+    linewidth = 0.5
+  ) +
+  #fundamentals mean
+  geom_hline(
+    yintercept = cvp_pred_2019$mean_pred * 100,
+    color = "black",
+    linewidth = 0.4,
+    linetype = "dashed"
+  ) +
+  #dynamic model mean trajectory
+  geom_line(
+    data = cvp_dyn_2019_6m,
+    aes(x = date, y = mean_pred),
+    color = "darkorange3",
+    linewidth = 0.8
+  ) +
+  scale_y_continuous(limits = c(0, 25), breaks = seq(0, 25, by = 5), minor_breaks = seq(0, 25, by = 2.5), expand = expansion(0)) +
+  labs(
+    x = "Date",
+    y = "Vote Share (%)",
+    shape = "Polling Company"
+  ) +
+  scale_shape_discrete(name = "", labels = company_labels) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold"),
+    plot.margin = margin(t = 20, r = 20, b = 0, l = 10, unit = "pt")
+  )
+
+print(p_dyn_cvp_2019_6m)
+
+ggsave("CVP Pre-Election Polling vs. Dynamic Forecast 6 Months Prior (2019).png", p_dyn_cvp_2019_6m, width = 6, height = 4, dpi = 200, units = "in")
+
+
+
+#sp 2019
+
+p_dyn_sp_2019_6m <- ggplot() +
+  #dynamic model ribbon (95% ci)
+  geom_ribbon(
+    data = sp_dyn_2019_6m,
+    aes(x = date, ymin = lower_ci, ymax = upper_ci),
+    fill = party_colors["sp"],
+    alpha = 0.2,
+    inherit.aes = FALSE
+  ) +
+  #fundamentals (95% ci)
+  geom_rect(
+    data = sp_pred_2019,
+    aes(xmin = start_2019-14, xmax = sp_dyn_2019_6m$date[1], ymin = lower_ci * 100, ymax = upper_ci * 100),
+    fill = "gray80",
+    alpha = 0.4,
+    inherit.aes = FALSE
+  ) +
+  #actual result
+  geom_hline(
+    yintercept = sp_result_2019,
+    color = party_colors["sp"],
+    linewidth = 1,
+    linetype = "solid"
+  ) +
+  #poll points
+  geom_point(
+    data = sp_polls_2019_6m %>% filter(polling_period >= start_2019),
+    aes(x = polling_period, y = poll_vote_share, shape = factor(polling_company)),
+    size = 2,
+    color = "black"
+  ) +
+  #EWMA line
+  geom_line(
+    data = sp_ewma_2019_6m,
+    aes(x = polling_period, y = ewma),
+    color = "black",
+    linewidth = 0.5
+  ) +
+  #fundamentals mean
+  geom_hline(
+    yintercept = sp_pred_2019$mean_pred * 100,
+    color = "black",
+    linewidth = 0.4,
+    linetype = "dashed"
+  ) +
+  #dynamic model mean trajectory
+  geom_line(
+    data = sp_dyn_2019_6m,
+    aes(x = date, y = mean_pred),
+    color = "red3",
+    linewidth = 0.8
+  ) +
+  scale_y_continuous(limits = c(10, 35), breaks = seq(10, 35, by = 5), minor_breaks = seq(10, 35, by = 2.5), expand = expansion(0)) +
+  labs(
+    x = "Date",
+    y = "Vote Share (%)",
+    shape = "Polling Company"
+  ) +
+  scale_shape_discrete(name = "", labels = company_labels) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold"),
+    plot.margin = margin(t = 20, r = 20, b = 0, l = 10, unit = "pt")
+  )
+
+print(p_dyn_sp_2019_6m)
+
+ggsave("SP Pre-Election Polling vs. Dynamic Forecast 6 Months Prior (2019).png", p_dyn_sp_2019_6m, width = 6, height = 4, dpi = 200, units = "in")
+
+
+
+#svp 2019
+
+p_dyn_svp_2019_6m <- ggplot() +
+  #dynamic model ribbon (95% ci)
+  geom_ribbon(
+    data = svp_dyn_2019_6m,
+    aes(x = date, ymin = lower_ci, ymax = upper_ci),
+    fill = party_colors["svp"],
+    alpha = 0.2,
+    inherit.aes = FALSE
+  ) +
+  #fundamentals (95% ci)
+  geom_rect(
+    data = svp_pred_2019,
+    aes(xmin = start_2019-14, xmax = svp_dyn_2019_6m$date[1], ymin = lower_ci * 100, ymax = upper_ci * 100),
+    fill = "gray80",
+    alpha = 0.4,
+    inherit.aes = FALSE
+  ) +
+  #actual result
+  geom_hline(
+    yintercept = svp_result_2019,
+    color = party_colors["svp"],
+    linewidth = 1,
+    linetype = "solid"
+  ) +
+  #poll points
+  geom_point(
+    data = svp_polls_2019_6m %>% filter(polling_period >= start_2019),
+    aes(x = polling_period, y = poll_vote_share, shape = factor(polling_company)),
+    size = 2,
+    color = "black"
+  ) +
+  #EWMA line
+  geom_line(
+    data = svp_ewma_2019_6m,
+    aes(x = polling_period, y = ewma),
+    color = "black",
+    linewidth = 0.5
+  ) +
+  #fundamentals mean
+  geom_hline(
+    yintercept = svp_pred_2019$mean_pred * 100,
+    color = "black",
+    linewidth = 0.4,
+    linetype = "dashed"
+  ) +
+  #dynamic model mean trajectory
+  geom_line(
+    data = svp_dyn_2019_6m,
+    aes(x = date, y = mean_pred),
+    color = "darkgreen",
+    linewidth = 0.8
+  ) +
+  scale_y_continuous(limits = c(15, 40), breaks = seq(15, 40, by = 5), minor_breaks = seq(15, 40, by = 2.5), expand = expansion(0)) +
+  labs(
+    x = "Date",
+    y = "Vote Share (%)",
+    shape = "Polling Company"
+  ) +
+  scale_shape_discrete(name = "", labels = company_labels) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold"),
+    plot.margin = margin(t = 20, r = 20, b = 0, l = 10, unit = "pt")
+  )
+
+print(p_dyn_svp_2019_6m)
+
+ggsave("SVP Pre-Election Polling vs. Dynamic Forecast 6 Months Prior (2019).png", p_dyn_svp_2019_6m, width = 6, height = 4, dpi = 200, units = "in")
+
+
+
+#other 2019
+
+p_dyn_other_2019_6m <- ggplot() +
+  #dynamic model ribbon (95% ci)
+  geom_ribbon(
+    data = other_dyn_2019_6m,
+    aes(x = date, ymin = lower_ci, ymax = upper_ci),
+    fill = party_colors["other"],
+    alpha = 0.2,
+    inherit.aes = FALSE
+  ) +
+  #fundamentals (95% ci)
+  geom_rect(
+    data = other_pred_2019,
+    aes(xmin = start_2019-14, xmax = other_dyn_2019_6m$date[1], ymin = lower_ci * 100, ymax = upper_ci * 100),
+    fill = "gray80",
+    alpha = 0.4,
+    inherit.aes = FALSE
+  ) +
+  #actual result
+  geom_hline(
+    yintercept = other_result_2019,
+    color = party_colors["other"],
+    linewidth = 1,
+    linetype = "solid"
+  ) +
+  #poll points
+  geom_point(
+    data = other_polls_2019_6m %>% filter(polling_period >= start_2019),
+    aes(x = polling_period, y = poll_vote_share, shape = factor(polling_company)),
+    size = 2,
+    color = "black"
+  ) +
+  #EWMA line
+  geom_line(
+    data = other_ewma_2019_6m,
+    aes(x = polling_period, y = ewma),
+    color = "black",
+    linewidth = 0.5
+  ) +
+  #fundamentals mean
+  geom_hline(
+    yintercept = other_pred_2019$mean_pred * 100,
+    color = "black",
+    linewidth = 0.4,
+    linetype = "dashed"
+  ) +
+  #dynamic model mean trajectory
+  geom_line(
+    data = other_dyn_2019_6m,
+    aes(x = date, y = mean_pred),
+    color = "plum3",
+    linewidth = 0.8
+  ) +
+  scale_y_continuous(limits = c(15, 40), breaks = seq(5, 40, by = 5), minor_breaks = seq(5, 40, by = 2.5), expand = expansion(0)) +
+  labs(
+    x = "Date",
+    y = "Vote Share (%)",
+    shape = "Polling Company"
+  ) +
+  scale_shape_discrete(name = "", labels = company_labels) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold"),
+    plot.margin = margin(t = 20, r = 20, b = 0, l = 10, unit = "pt")
+  )
+
+print(p_dyn_other_2019_6m)
+
+ggsave("Other Pre-Election Polling vs. Dynamic Forecast 6 Months Prior (2019).png", p_dyn_other_2019_6m, width = 6, height = 4, dpi = 200, units = "in")
+
+```
+
+
+####2023
+
+
+```{r}
+p_ci_2023_6m <- ggplot(df_dyn_result_2023_6m, aes(x = party)) +
+  #actual result
+  geom_rect(data = results_2023,
+            aes(width = 0.4,
+                ymin = 0, ymax = vote_share / 100, fill = party, alpha = 0.6),
+            color = NA, show.legend = FALSE) +
+  #95% CI
+  geom_rect(aes(width = 0.3,
+                ymin = lower_ci, ymax = upper_ci),
+            fill = "gray50", alpha = 0.6, color = NA) +
+  #mean
+  geom_point(aes(y = mean_pred),
+             shape = 21, fill = "white", color = "black", size = 3, stroke = 0.5) +
+  #scale y to percentage
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     limits = c(0, 0.4),
+                     expand = expansion(mult = c(0, 0.1))) +
+  #party colors
+  scale_fill_manual(values = party_colors) +
+  #values next to bars
+  geom_text(aes(y = mean_pred, label = sprintf("%.1f", mean_pred * 100)),
+            hjust = -0.9, size = 4.5, color = "gray40") +
+  geom_text(data = results_2023, aes(y = vote_share / 100, label = sprintf("%.1f", vote_share)),
+            hjust = 1.9, size = 4.5, color = "black") +
+  #party names lowercase to capital
+  scale_x_discrete(labels = party_labels) +
+  labs(
+    x = "Party",
+    y = "Vote Share"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "gray90", linetype = "dashed"),
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(face = "bold", size = 12),
+    axis.text.y = element_text(size = 12),
+    axis.ticks.x = element_blank(),
+    plot.margin = margin(t = 10, r = 10, b = 10, l = 10, unit = "pt")
+  )
+
+print(p_ci_2023_6m)
+
+ggsave("Dynamic Prediction 6 Months Prior (2023).png", p_ci_2023_6m, width = 8, height = 5, dpi = 200, units = "in")
+
+```
+
+
+Check if the results fall within the CI
+```{r}
+check_dyn_2023_6m <- left_join(df_dyn_result_2023_6m, results_2023, by = "party") %>%
+  mutate(
+    within_ci = vote_share/100 >= lower_ci & vote_share/100 <= upper_ci
+  )
+
+cat("\nCheck whether the results lie within the 95% CI:\n")
+print(check_dyn_2023_6m %>% select(party, vote_share, lower_ci, upper_ci, within_ci))
+
+```
+
+```{r}
+p_all_dyn_2023_6m <- ggplot(df_dynamic_summary_2023_6m %>% filter(date >= start_2023), aes(x=date, y=mean_pred*100, color=party))+
+  geom_line(linewidth=1)+
+  geom_ribbon(aes(ymin=lower_ci*100, ymax=upper_ci*100, fill=party), alpha=0.2, color=NA)+
+  #geom_point(data=SPD_2023 %>% filter(polling_period >= start_2023),
+             #aes(x=polling_period, y=poll_vote_share, group="polling company"),
+             #alpha=0.3, size=0.5, color="gray40")+
+  scale_color_manual(name = "", values=c("dodgerblue4", "darkorange3", "red3", "darkgreen", "plum3"), labels = party_labels)+
+  scale_fill_manual(name = "", values=party_colors, labels = party_labels)+
+  scale_y_continuous(limits = c(5, 40), breaks = seq(10, 40, by = 10), minor_breaks = seq(5, 40, by = 5), expand = expansion(0))+
+  labs(
+    x="Date",
+    y="Vote Share (%)"
+  )+
+  theme_minimal()+
+  theme(legend.position = "bottom",
+        plot.margin = margin(t = 10, r = 10, b = 10, l = 10, unit = "pt"))
+
+
+
+print(p_all_dyn_2023_6m)
+
+ggsave("Dynamic Forecast Trajectory 6 Months Prior (2023).png", p_all_dyn_2023_6m, width = 8, height = 4, dpi = 200, units = "in")
+
+```
+
+
+#####BY PARTY
+Data
+```{r}
+#fdp 2023
+
+fdp_result_2023 <- results_2023$vote_share[1]
+
+fdp_polls_2023_6m <- SPD_2023 %>%
+  filter(party == "fdp") %>%
+  arrange(polling_period)%>%
+  filter(polling_period <= cutoff_6m_2023)
+
+fdp_ewma_2023_6m <- ewma_2023_6m %>%
+  select(polling_period, ewma_fdp) %>%
+  rename(ewma = ewma_fdp)
+
+#fdp_pred_2023 = fundamentals prediction
+
+fdp_dyn_2023_6m <- df_dynamic_summary_2023_6m %>%
+  filter(party == "fdp") %>%
+  mutate(
+    mean_pred = mean_pred * 100,
+    sd_pred = sd_pred * 100,
+    lower_ci = lower_ci * 100,
+    upper_ci = upper_ci *100
+  )
+
+
+
+#cvp 2023
+
+cvp_result_2023 <- results_2023$vote_share[2]
+
+cvp_polls_2023_6m <- SPD_2023 %>%
+  filter(party == "cvp") %>%
+  arrange(polling_period) %>%
+  filter(polling_period <= cutoff_6m_2023)
+
+cvp_ewma_2023_6m <- ewma_2023_6m %>%
+  select(polling_period, ewma_cvp) %>%
+  rename(ewma = ewma_cvp)
+
+#cvp_pred_2023 = fundamentals prediction
+
+cvp_dyn_2023_6m <- df_dynamic_summary_2023_6m %>%
+  filter(party == "cvp") %>%
+  mutate(
+    mean_pred = mean_pred * 100,
+    sd_pred = sd_pred * 100,
+    lower_ci = lower_ci * 100,
+    upper_ci = upper_ci *100
+  )
+
+
+
+#sp 2023
+
+sp_result_2023 <- results_2023$vote_share[3]
+
+sp_polls_2023_6m <- SPD_2023 %>%
+  filter(party == "sp") %>%
+  arrange(polling_period) %>%
+  filter(polling_period <= cutoff_6m_2023)
+
+sp_ewma_2023_6m <- ewma_2023_6m %>%
+  select(polling_period, ewma_sp) %>%
+  rename(ewma = ewma_sp)
+
+#sp_pred_2023 = fundamentals prediction
+
+sp_dyn_2023_6m <- df_dynamic_summary_2023_6m %>%
+  filter(party == "sp") %>%
+  mutate(
+    mean_pred = mean_pred * 100,
+    sd_pred = sd_pred * 100,
+    lower_ci = lower_ci * 100,
+    upper_ci = upper_ci *100
+  )
+
+
+
+#svp 2023
+
+svp_result_2023 <- results_2023$vote_share[4]
+
+svp_polls_2023_6m <- SPD_2023 %>%
+  filter(party == "svp") %>%
+  arrange(polling_period) %>%
+  filter(polling_period <= cutoff_6m_2023)
+
+svp_ewma_2023_6m <- ewma_2023_6m %>%
+  select(polling_period, ewma_svp) %>%
+  rename(ewma = ewma_svp)
+
+#svp_pred_2023 = fundamentals prediction
+
+svp_dyn_2023_6m <- df_dynamic_summary_2023_6m %>%
+  filter(party == "svp") %>%
+  mutate(
+    mean_pred = mean_pred * 100,
+    sd_pred = sd_pred * 100,
+    lower_ci = lower_ci * 100,
+    upper_ci = upper_ci *100
+  )
+
+
+
+#other 2023
+
+other_result_2023 <- results_2023$vote_share[5]
+
+other_polls_2023_6m <- SPD_2023 %>%
+  filter(party == "other") %>%
+  arrange(polling_period) %>%
+  filter(polling_period <= cutoff_6m_2023)
+
+other_ewma_2023_6m <- ewma_2023_6m %>%
+  select(polling_period, ewma_other) %>%
+  rename(ewma = ewma_other)
+
+#other_pred_2023 = fundamentals prediction
+
+other_dyn_2023_6m <- df_dynamic_summary_2023_6m %>%
+  filter(party == "other") %>%
+  mutate(
+    mean_pred = mean_pred * 100,
+    sd_pred = sd_pred * 100,
+    lower_ci = lower_ci * 100,
+    upper_ci = upper_ci *100
+  )
+
+
+```
+
+
+Plots
+```{r}
+#fdp 2023
+
+p_dyn_fdp_2023_6m <- ggplot() +
+  #dynamic model ribbon (95% ci)
+  geom_ribbon(
+    data = fdp_dyn_2023_6m,
+    aes(x = date, ymin = lower_ci, ymax = upper_ci),
+    fill = party_colors["fdp"],
+    alpha = 0.2,
+    inherit.aes = FALSE
+  ) +
+  #fundamentals (95% ci)
+  geom_rect(
+    data = fdp_pred_2023,
+    aes(xmin = start_2023 -14, xmax = fdp_dyn_2023_6m$date[1], ymin = lower_ci * 100, ymax = upper_ci * 100),
+    fill = "gray80",
+    alpha = 0.4,
+    inherit.aes = FALSE
+  ) +
+  #actual result
+  geom_hline(
+    yintercept = fdp_result_2023,
+    color = party_colors["fdp"],
+    linewidth = 1,
+    linetype = "solid"
+  ) +
+  #poll points
+  geom_point(
+    data = fdp_polls_2023_6m %>% filter(polling_period >= start_2023),
+    aes(x = polling_period, y = poll_vote_share, shape = factor(polling_company)),
+    size = 2,
+    color = "black"
+  ) +
+  #EWMA line
+  geom_line(
+    data = fdp_ewma_2023_6m,
+    aes(x = polling_period, y = ewma),
+    color = "black",
+    linewidth = 0.5
+  ) +
+  #fundamentals mean
+  geom_hline(
+    yintercept = fdp_pred_2023$mean_pred * 100,
+    color = "black",
+    linewidth = 0.4,
+    linetype = "dashed"
+  ) +
+  #dynamic model mean trajectory
+  geom_line(
+    data = fdp_dyn_2023_6m,
+    aes(x = date, y = mean_pred),
+    color = "dodgerblue4",
+    linewidth = 0.8
+  ) +
+  scale_y_continuous(limits = c(5, 30), breaks = seq(5, 30, by = 5), minor_breaks = seq(5, 30, by = 2.5), expand = expansion(0)) +
+  labs(
+    x = "Date",
+    y = "Vote Share (%)",
+    shape = "Polling Company"
+  ) +
+  scale_shape_discrete(name = "", labels = company_labels) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold"),
+    plot.margin = margin(t = 20, r = 20, b = 0, l = 10, unit = "pt")
+  )
+
+print(p_dyn_fdp_2023_6m)
+
+ggsave("FDP Pre-Election Polling vs. Dynamic Forecast 6 Months Prior (2023).png", p_dyn_fdp_2023_6m, width = 6, height = 4, dpi = 200, units = "in")
+
+
+#cvp 2023
+
+p_dyn_cvp_2023_6m <- ggplot() +
+  #dynamic model ribbon (95% ci)
+  geom_ribbon(
+    data = cvp_dyn_2023_6m,
+    aes(x = date, ymin = lower_ci, ymax = upper_ci),
+    fill = party_colors["cvp"],
+    alpha = 0.2,
+    inherit.aes = FALSE
+  ) +
+  #fundamentals (95% ci)
+  geom_rect(
+    data = cvp_pred_2023,
+    aes(xmin = start_2023 -14, xmax = cvp_dyn_2023_6m$date[1], ymin = lower_ci * 100, ymax = upper_ci * 100),
+    fill = "gray80",
+    alpha = 0.4,
+    inherit.aes = FALSE
+  ) +
+  #actual result
+  geom_hline(
+    yintercept = cvp_result_2023,
+    color = party_colors["cvp"],
+    linewidth = 1,
+    linetype = "solid"
+  ) +
+  #poll points
+  geom_point(
+    data = cvp_polls_2023_6m %>% filter(polling_period >= start_2023),
+    aes(x = polling_period, y = poll_vote_share, shape = factor(polling_company)),
+    size = 2,
+    color = "black"
+  ) +
+  #EWMA line
+  geom_line(
+    data = cvp_ewma_2023_6m,
+    aes(x = polling_period, y = ewma),
+    color = "black",
+    linewidth = 0.5
+  ) +
+  #fundamentals mean
+  geom_hline(
+    yintercept = cvp_pred_2023$mean_pred * 100,
+    color = "black",
+    linewidth = 0.4,
+    linetype = "dashed"
+  ) +
+  #dynamic model mean trajectory
+  geom_line(
+    data = cvp_dyn_2023_6m,
+    aes(x = date, y = mean_pred),
+    color = "darkorange3",
+    linewidth = 0.8
+  ) +
+  scale_y_continuous(limits = c(0, 25), breaks = seq(0, 25, by = 5), minor_breaks = seq(0, 25, by = 2.5), expand = expansion(0)) +
+  labs(
+    x = "Date",
+    y = "Vote Share (%)",
+    shape = "Polling Company"
+  ) +
+  scale_shape_discrete(name = "", labels = company_labels) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold"),
+    plot.margin = margin(t = 20, r = 20, b = 0, l = 10, unit = "pt")
+  )
+
+print(p_dyn_cvp_2023_6m)
+
+ggsave("CVP Pre-Election Polling vs. Dynamic Forecast 6 Months Prior (2023).png", p_dyn_cvp_2023_6m, width = 6, height = 4, dpi = 200, units = "in")
+
+
+
+
+#sp 2023
+
+p_dyn_sp_2023_6m <- ggplot() +
+  #dynamic model ribbon (95% ci)
+  geom_ribbon(
+    data = sp_dyn_2023_6m,
+    aes(x = date, ymin = lower_ci, ymax = upper_ci),
+    fill = party_colors["sp"],
+    alpha = 0.2,
+    inherit.aes = FALSE
+  ) +
+  #fundamentals (95% ci)
+  geom_rect(
+    data = sp_pred_2023,
+    aes(xmin = start_2023 -14, xmax = sp_dyn_2023_6m$date[1], ymin = lower_ci * 100, ymax = upper_ci * 100),
+    fill = "gray80",
+    alpha = 0.4,
+    inherit.aes = FALSE
+  ) +
+  #actual result
+  geom_hline(
+    yintercept = sp_result_2023,
+    color = party_colors["sp"],
+    linewidth = 1,
+    linetype = "solid"
+  ) +
+  #poll points
+  geom_point(
+    data = sp_polls_2023_6m %>% filter(polling_period >= start_2023),
+    aes(x = polling_period, y = poll_vote_share, shape = factor(polling_company)),
+    size = 2,
+    color = "black"
+  ) +
+  #fundamentals mean
+  geom_hline(
+    yintercept = sp_pred_2023$mean_pred * 100,
+    color = "black",
+    linewidth = 0.4,
+    linetype = "dashed"
+  ) +
+  #EWMA line
+  geom_line(
+    data = sp_ewma_2023_6m,
+    aes(x = polling_period, y = ewma),
+    color = "black",
+    linewidth = 0.5
+  ) +
+  #dynamic model mean trajectory
+  geom_line(
+    data = sp_dyn_2023_6m,
+    aes(x = date, y = mean_pred),
+    color = "red3",
+    linewidth = 0.8
+  ) +
+  scale_y_continuous(limits = c(10, 35), breaks = seq(10, 35, by = 5), minor_breaks = seq(10, 35, by = 2.5), expand = expansion(0)) +
+  labs(
+    x = "Date",
+    y = "Vote Share (%)",
+    shape = "Polling Company"
+  ) +
+  scale_shape_discrete(name = "", labels = company_labels) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold"),
+    plot.margin = margin(t = 20, r = 20, b = 0, l = 10, unit = "pt")
+  )
+
+print(p_dyn_sp_2023_6m)
+
+ggsave("SP Pre-Election Polling vs. Dynamic Forecast 6 Months Prior (2023).png", p_dyn_sp_2023_6m, width = 6, height = 4, dpi = 200, units = "in")
+
+
+
+
+#svp 2023
+
+p_dyn_svp_2023_6m <- ggplot() +
+  #dynamic model ribbon (95% ci)
+  geom_ribbon(
+    data = svp_dyn_2023_6m,
+    aes(x = date, ymin = lower_ci, ymax = upper_ci),
+    fill = party_colors["svp"],
+    alpha = 0.2,
+    inherit.aes = FALSE
+  ) +
+  #fundamentals (95% ci)
+  geom_rect(
+    data = svp_pred_2023,
+    aes(xmin = start_2023 -14, xmax = svp_dyn_2023_6m$date[1], ymin = lower_ci * 100, ymax = upper_ci * 100),
+    fill = "gray80",
+    alpha = 0.4,
+    inherit.aes = FALSE
+  ) +
+  #poll points
+  geom_point(
+    data = svp_polls_2023_6m %>% filter(polling_period >= start_2023),
+    aes(x = polling_period, y = poll_vote_share, shape = factor(polling_company)),
+    size = 2,
+    color = "black"
+  ) +
+  #actual result
+  geom_hline(
+    yintercept = svp_result_2023,
+    color = party_colors["svp"],
+    linewidth = 1,
+    linetype = "solid"
+  ) +
+  #EWMA line
+  geom_line(
+    data = svp_ewma_2023_6m,
+    aes(x = polling_period, y = ewma),
+    color = "black",
+    linewidth = 0.5
+  ) +
+  #fundamentals mean
+  geom_hline(
+    yintercept = svp_pred_2023$mean_pred * 100,
+    color = "black",
+    linewidth = 0.4,
+    linetype = "dashed"
+  ) +
+  #dynamic model mean trajectory
+  geom_line(
+    data = svp_dyn_2023_6m,
+    aes(x = date, y = mean_pred),
+    color = "darkgreen",
+    linewidth = 0.8
+  ) +
+  scale_y_continuous(limits = c(15, 40), breaks = seq(15, 40, by = 5), minor_breaks = seq(15, 40, by = 2.5), expand = expansion(0)) +
+  labs(
+    x = "Date",
+    y = "Vote Share (%)",
+    shape = "Polling Company"
+  ) +
+  scale_shape_discrete(name = "", labels = company_labels) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold"),
+    plot.margin = margin(t = 20, r = 20, b = 0, l = 10, unit = "pt")
+  )
+
+print(p_dyn_svp_2023_6m)
+
+ggsave("SVP Pre-Election Polling vs. Dynamic Forecast 6 Months Prior (2023).png", p_dyn_svp_2023_6m, width = 6, height = 4, dpi = 200, units = "in")
+
+
+
+#other 2023
+
+p_dyn_other_2023_6m <- ggplot() +
+  #dynamic model ribbon (95% ci)
+  geom_ribbon(
+    data = other_dyn_2023_6m,
+    aes(x = date, ymin = lower_ci, ymax = upper_ci),
+    fill = party_colors["other"],
+    alpha = 0.2,
+    inherit.aes = FALSE
+  ) +
+  #fundamentals (95% ci)
+  geom_rect(
+    data = other_pred_2023,
+    aes(xmin = start_2023 -14, xmax = other_dyn_2023_6m$date[1], ymin = lower_ci * 100, ymax = upper_ci * 100),
+    fill = "gray80",
+    alpha = 0.4,
+    inherit.aes = FALSE
+  ) +
+  #actual result
+  geom_hline(
+    yintercept = other_result_2023,
+    color = party_colors["other"],
+    linewidth = 1,
+    linetype = "solid"
+  ) +
+  #poll points
+  geom_point(
+    data = other_polls_2023_6m %>% filter(polling_period >= start_2023),
+    aes(x = polling_period, y = poll_vote_share, shape = factor(polling_company)),
+    size = 2,
+    color = "black"
+  ) +
+  #EWMA line
+  geom_line(
+    data = other_ewma_2023_6m,
+    aes(x = polling_period, y = ewma),
+    color = "black",
+    linewidth = 0.5
+  ) +
+  #fundamentals mean
+  geom_hline(
+    yintercept = other_pred_2023$mean_pred * 100,
+    color = "black",
+    linewidth = 0.4,
+    linetype = "dashed"
+  ) +
+  #dynamic model mean trajectory
+  geom_line(
+    data = other_dyn_2023_6m,
+    aes(x = date, y = mean_pred),
+    color = "plum3",
+    linewidth = 0.8
+  ) +
+  scale_y_continuous(limits = c(10, 35), breaks = seq(10, 35, by = 5), minor_breaks = seq(10, 35, by = 2.5), expand = expansion(0)) +
+  labs(
+    x = "Date",
+    y = "Vote Share (%)",
+    shape = "Polling Company"
+  ) +
+  scale_shape_discrete(name = "", labels = company_labels) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold"),
+    plot.margin = margin(t = 20, r = 20, b = 0, l = 10, unit = "pt")
+  )
+
+print(p_dyn_other_2023_6m)
+
+ggsave("Other Pre-Election Polling vs. Dynamic Forecast 6 Months Prior (2023).png", p_dyn_other_2023_6m, width = 6, height = 4, dpi = 200, units = "in")
+
+```
